@@ -2,7 +2,8 @@ import express from 'express';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
 
-import { env } from './config/env.js';
+import { env, getCachedDbDefaults, setRuntimeDbDefaults } from './config/env.js';
+import { queryOne } from './db/mysql.js';
 import { attachAuthUser } from './middleware/auth.js';
 import {
   apiSecurityHeaders,
@@ -51,6 +52,34 @@ export function buildApp() {
     })
   );
   app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+  app.use(async (req, _res, next) => {
+    const proto = String(req.headers['x-forwarded-proto'] || req.protocol || 'https').split(',')[0].trim();
+    const host = req.get('host');
+    const requestOrigin = host ? `${proto}://${host}` : '';
+    setRuntimeDbDefaults({ requestOrigin });
+    if (req.path !== '/health') {
+      const cached = getCachedDbDefaults();
+      if (cached) {
+        setRuntimeDbDefaults(cached);
+      } else {
+        try {
+          const s = await queryOne('SELECT app_name, url, jwt_secret FROM settings ORDER BY id ASC LIMIT 1');
+          if (s) {
+            setRuntimeDbDefaults({
+              app_name: s.app_name,
+              url: s.url,
+              jwt_secret: s.jwt_secret,
+            });
+          }
+        } catch (err) {
+          if (err?.code === 'ETIMEDOUT' || err?.code === 'ECONNREFUSED' || err?.code === 'ER_ACCESS_DENIED_ERROR') {
+            return next(err);
+          }
+        }
+      }
+    }
+    next();
+  });
   app.use(attachAuthUser);
   app.use(apiSecurityHeaders);
   app.use(conditionalSignedApi);

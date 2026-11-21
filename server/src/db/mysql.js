@@ -44,6 +44,7 @@ function buildConnectionOptions() {
     timezone: 'Z',
     charset: 'utf8mb4',
     disableEval: true,
+    connectTimeout: 20000,
     ...(env.dbSsl && !hd ? { ssl: { rejectUnauthorized: false } } : {}),
   };
 }
@@ -66,10 +67,26 @@ async function getActiveExecutor() {
 
   const reqCtx = requestDbStorage.getStore();
   if (reqCtx) {
-    if (!reqCtx.connPromise) {
-      reqCtx.connPromise = mysql.createConnection(buildConnectionOptions());
+    if (reqCtx.connError) {
+      throw reqCtx.connError;
     }
-    return reqCtx.connPromise;
+    if (!reqCtx.connPromise) {
+      reqCtx.connPromise = mysql.createConnection(buildConnectionOptions()).catch((err) => {
+        reqCtx.connError = err;
+        reqCtx.connPromise = null;
+        throw err;
+      });
+    }
+    const conn = await reqCtx.connPromise;
+    if (conn?.connection?._closing || conn?.connection?._fatalError) {
+      reqCtx.connPromise = mysql.createConnection(buildConnectionOptions()).catch((err) => {
+        reqCtx.connError = err;
+        reqCtx.connPromise = null;
+        throw err;
+      });
+      return reqCtx.connPromise;
+    }
+    return conn;
   }
 
   return getFallbackPool();
@@ -77,7 +94,7 @@ async function getActiveExecutor() {
 
 export async function runWithRequestDb(cfEnv, fn) {
   return runWithRuntimeEnv(cfEnv, async () => {
-    const reqCtx = { connPromise: null, txDepth: 0 };
+    const reqCtx = { connPromise: null, connError: null, txDepth: 0 };
     try {
       return await requestDbStorage.run(reqCtx, fn);
     } finally {

@@ -4,6 +4,24 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import dotenv from 'dotenv';
 
 const runtimeEnvStorage = new AsyncLocalStorage();
+const cachedDbDefaults = {
+  jwt_secret: '',
+  app_name: '',
+  url: '',
+  fetchedAt: 0,
+};
+const DB_DEFAULTS_TTL_MS = 60_000;
+
+export function getCachedDbDefaults() {
+  if (cachedDbDefaults.fetchedAt && Date.now() - cachedDbDefaults.fetchedAt < DB_DEFAULTS_TTL_MS) {
+    return cachedDbDefaults;
+  }
+  return null;
+}
+
+export function clearCachedDbDefaults() {
+  cachedDbDefaults.fetchedAt = 0;
+}
 
 // Only attempt dotenv loading when running under plain local Node (skipped cleanly inside Cloudflare Workers)
 try {
@@ -19,13 +37,46 @@ try {
 }
 
 export function runWithRuntimeEnv(cfEnv, fn) {
-  return runtimeEnvStorage.run(cfEnv || {}, fn);
+  return runtimeEnvStorage.run(
+    {
+      bindings: cfEnv || {},
+      dbDefaults: {},
+      requestOrigin: '',
+    },
+    fn
+  );
+}
+
+export function setRuntimeDbDefaults({ jwt_secret, app_name, url, requestOrigin } = {}) {
+  const store = runtimeEnvStorage.getStore();
+  if (jwt_secret) {
+    const val = String(jwt_secret).trim();
+    cachedDbDefaults.jwt_secret = val;
+    if (store) store.dbDefaults.jwt_secret = val;
+  }
+  if (app_name) {
+    const val = String(app_name).trim();
+    cachedDbDefaults.app_name = val;
+    if (store) store.dbDefaults.app_name = val;
+  }
+  if (url) {
+    const val = String(url).trim();
+    cachedDbDefaults.url = val;
+    if (store) store.dbDefaults.url = val;
+  }
+  if (jwt_secret || app_name || url) {
+    cachedDbDefaults.fetchedAt = Date.now();
+  }
+  if (requestOrigin && store) {
+    store.requestOrigin = String(requestOrigin).replace(/\/+$/, '');
+  }
 }
 
 export function getRuntimeVar(key, fallback = '') {
-  const cfStore = runtimeEnvStorage.getStore();
-  if (cfStore && cfStore[key] !== undefined && cfStore[key] !== null && cfStore[key] !== '') {
-    return cfStore[key];
+  const store = runtimeEnvStorage.getStore();
+  const cfVal = store?.bindings?.[key];
+  if (cfVal !== undefined && cfVal !== null && cfVal !== '') {
+    return cfVal;
   }
   if (typeof process !== 'undefined' && process.env && process.env[key] !== undefined && process.env[key] !== '') {
     return process.env[key];
@@ -34,7 +85,7 @@ export function getRuntimeVar(key, fallback = '') {
 }
 
 export function getRuntimeBinding(name) {
-  return runtimeEnvStorage.getStore()?.[name] || null;
+  return runtimeEnvStorage.getStore()?.bindings?.[name] || null;
 }
 
 export const env = {
@@ -45,17 +96,26 @@ export const env = {
     return String(getRuntimeVar('NODE_ENV', 'production'));
   },
   get appName() {
-    return String(getRuntimeVar('APP_NAME', 'easyplex-mobile'));
+    const store = runtimeEnvStorage.getStore();
+    return String(store?.dbDefaults?.app_name || getRuntimeVar('APP_NAME', 'easyplex-mobile'));
   },
   get appUrl() {
-    const raw = getRuntimeVar('APP_URL') || getRuntimeVar('CF_PAGES_URL') || 'https://easyplex.pages.dev';
+    const store = runtimeEnvStorage.getStore();
+    const raw =
+      store?.dbDefaults?.url ||
+      getRuntimeVar('APP_URL') ||
+      store?.requestOrigin ||
+      getRuntimeVar('CF_PAGES_URL') ||
+      'https://easyplex.pages.dev';
     return String(raw).replace(/\/+$/, '');
   },
   get jwtSecret() {
-    return String(getRuntimeVar('JWT_SECRET', 'easyplex-jwt-secret-change-in-cloudflare-env'));
-  },
-  get sessionSecret() {
-    return String(getRuntimeVar('SESSION_SECRET', 'easyplex-session-secret-change-in-cloudflare-env'));
+    const store = runtimeEnvStorage.getStore();
+    return String(
+      getRuntimeVar('JWT_SECRET') ||
+        store?.dbDefaults?.jwt_secret ||
+        'easyplex-default-secret'
+    );
   },
   get dbConnection() {
     return 'mysql';

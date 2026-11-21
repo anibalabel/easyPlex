@@ -22,7 +22,7 @@ import {
   sendStoredFile,
 } from '../../middleware/upload.js';
 import { COUNTRIES } from '../../config/countries.js';
-import { env } from '../../config/env.js';
+import { env, clearCachedDbDefaults } from '../../config/env.js';
 import { sha256 } from '../../services/crypto.js';
 import { toBoolInt } from '../../services/mediaCatalog.js';
 
@@ -176,6 +176,7 @@ async function applySettingsUpdate(payload) {
     const setSql = keys.map((k) => `\`${k}\` = ?`).join(', ');
     const vals = keys.map((k) => updates[k]);
     await execute(`UPDATE settings SET ${setSql}, updated_at = ? WHERE id = ?`, [...vals, nowIso(), settingsRow.id]);
+    clearCachedDbDefaults();
   }
   return queryOne('SELECT * FROM settings ORDER BY id ASC LIMIT 1');
 }
