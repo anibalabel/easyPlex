@@ -57,7 +57,7 @@ export function buildApp() {
     const host = req.get('host');
     const requestOrigin = host ? `${proto}://${host}` : '';
     setRuntimeDbDefaults({ requestOrigin });
-    if (req.path !== '/health') {
+    if (req.path !== '/health' && !req.path.startsWith('/installer-api/')) {
       const cached = getCachedDbDefaults();
       if (cached) {
         setRuntimeDbDefaults(cached);

@@ -1,9 +1,22 @@
 import { Router } from 'express';
-import { env } from '../config/env.js';
+import {
+  clearCachedDbDefaults,
+  clearCachedKvDbConfig,
+  env,
+  getActiveKvDbConfig,
+  setCachedKvDbConfig,
+} from '../config/env.js';
 import { SUPPORTED_LOCALES, LOCALE_MESSAGES } from '../config/locales.js';
 import { VISIBLE_PERMISSION_KEYS, PERMISSION_DEFINITIONS } from '../config/permissions.js';
-import { execute, nowIso, queryAll, queryOne, hasColumn } from '../db/mysql.js';
-import { ensureAuxMySqlTables } from '../db/schema.js';
+import {
+  clearSchemaCache,
+  execute,
+  hasColumn,
+  nowIso,
+  queryAll,
+  queryOne,
+  testDirectConnection,
+} from '../db/mysql.js';
 import { hashPassword, randomHex, signAuthToken, verifyPassword } from '../services/crypto.js';
 import { getUserWithPermissions, requireAdminOrModerator, touchLastLogin } from '../middleware/auth.js';
 import { makeAsyncRouter } from '../middleware/asyncHandler.js';
@@ -208,110 +221,95 @@ router.post('/admin/locale', (req, res) => {
   });
 });
 
-// Installer routes
+// Remote MySQL Setup & Connection Diagnostics Wizard
+function activeDbSource() {
+  if (env.hyperdrive) return 'hyperdrive';
+  if (getActiveKvDbConfig()?.host) return 'kv';
+  if (env.dbHost && env.dbDatabase && env.dbUsername) return 'env';
+  return 'none';
+}
+
 router.get('/installer-api/status', async (_req, res) => {
-  await ensureAuxMySqlTables();
-  const state = await queryOne(`SELECT * FROM installer_state ORDER BY id ASC LIMIT 1`);
-  const settings = await queryOne(`SELECT app_name, url, tmdb_api_key FROM settings ORDER BY id ASC LIMIT 1`);
+  const source = activeDbSource();
+  const check = await testDirectConnection();
   return res.json({
-    installed: Boolean(Number(state?.installed ?? 1)),
-    installed_at: state?.installed_at || null,
-    app_name: settings?.app_name || env.appName,
-    app_url: settings?.url || env.appUrl,
-    tmdb_configured: Boolean(settings?.tmdb_api_key),
+    connected: check.ok,
+    configured: source !== 'none',
+    source,
+    kv_bound: Boolean(env.configKv),
+    hyperdrive_bound: Boolean(env.hyperdrive),
+    host: env.dbHost || (env.hyperdrive ? 'HYPERDRIVE' : ''),
+    port: env.dbPort || 3306,
+    database: env.dbDatabase || env.hyperdrive?.database || '',
+    username: env.dbUsername || env.hyperdrive?.user || '',
+    ssl: Boolean(env.dbSsl),
+    app_name: check.app_name || env.appName,
+    tables_count: check.tables_count || 0,
+    mysql_version: check.mysql_version || null,
+    latency_ms: check.latency_ms,
+    error_code: check.ok ? null : check.code,
+    error_message: check.ok ? null : check.message,
+    hint: check.ok ? null : check.hint,
     db_driver: `mysql (${env.dbHost || 'hyperdrive'}:${env.dbPort}/${env.dbDatabase})`,
-    node_version: 'Cloudflare Pages (nodejs_compat)',
+    node_version: 'Cloudflare Workers (nodejs_compat)',
   });
 });
 
-router.get('/installer-api/requirements', async (_req, res) => {
-  let mysqlOk = false;
-  try {
-    await queryOne('SELECT 1 AS ok');
-    mysqlOk = true;
-  } catch {
-    mysqlOk = false;
-  }
-  const requirements = [
-    { name: 'Cloudflare Pages Edge Runtime (nodejs_compat)', passed: true },
-    { name: 'Remote MySQL2 Connection Driver', passed: mysqlOk },
-    { name: 'Cloudflare R2 / MySQL File Storage', passed: true },
-    { name: 'JSON & Crypto Engine', passed: true },
-    { name: 'TMDB External API Fetch', passed: typeof fetch === 'function' },
-  ];
+router.post('/installer-api/test-connection', async (req, res) => {
+  const host = String(req.body?.host || '').trim();
+  const port = Number(req.body?.port || 3306);
+  const database = String(req.body?.database || '').trim();
+  const username = String(req.body?.username || '').trim();
+  const password = String(req.body?.password ?? '');
+  const ssl = Boolean(req.body?.ssl);
 
-  const storagePaths = [
-    {
-      folder: 'mysql',
-      path: `${env.dbHost || 'hyperdrive'}:${env.dbPort}/${env.dbDatabase}`,
-      writable: mysqlOk,
-      permission: 'rw',
-    },
-    {
-      folder: env.storageBucket ? 'cloudflare-r2' : 'mysql:uploaded_files',
-      path: env.storageBucket ? 'R2 STORAGE_BUCKET Binding' : `${env.dbDatabase}.uploaded_files`,
-      writable: mysqlOk,
-      permission: 'rw',
-    },
-  ];
-
-  return res.json({
-    requirements,
-    permissions: storagePaths,
-    all_passed: requirements.every((r) => r.passed),
-  });
+  const check = await testDirectConnection({ host, port, database, username, password, ssl });
+  return res.status(check.ok ? 200 : 422).json(check);
 });
 
-router.post('/installer-api/finish', async (req, res) => {
-  const appName = String(req.body?.app_name || 'EASYPLEX').trim() || 'EASYPLEX';
-  const appUrl = String(req.body?.app_url || env.appUrl).trim();
-  const tmdbApiKey = String(req.body?.tmdb_api_key || '').trim();
-  const adminEmail = String(req.body?.admin_email || 'admin@easyplex.com').trim().toLowerCase();
-  const adminName = String(req.body?.admin_name || 'admin').trim() || 'admin';
-  const adminPassword = String(req.body?.admin_password || '').trim();
-  const now = nowIso();
-
-  await ensureAuxMySqlTables();
-
-  const sRow = await queryOne(`SELECT id FROM settings ORDER BY id ASC LIMIT 1`);
-  if (sRow) {
-    await execute(
-      `UPDATE settings SET app_name = ?, url = ?, tmdb_api_key = COALESCE(NULLIF(?, ''), tmdb_api_key), updated_at = ? WHERE id = ?`,
-      [appName, appUrl, tmdbApiKey, now, sRow.id]
-    );
+router.post('/installer-api/save-connection', async (req, res) => {
+  const currentCheck = await testDirectConnection();
+  if (currentCheck.ok && !req.user?.is_admin) {
+    return res.status(403).json({
+      message: 'An active database connection already exists. Sign in as admin to modify it.',
+    });
   }
 
-  const existingAdmin = await queryOne(`SELECT id FROM users WHERE role = 'admin' ORDER BY id ASC LIMIT 1`);
-  if (existingAdmin) {
-    if (adminPassword) {
-      await execute(
-        `UPDATE users SET name = ?, email = ?, password = ?, updated_at = ? WHERE id = ?`,
-        [adminName, adminEmail, hashPassword(adminPassword), now, existingAdmin.id]
-      );
-    } else {
-      await execute(
-        `UPDATE users SET name = ?, email = ?, updated_at = ? WHERE id = ?`,
-        [adminName, adminEmail, now, existingAdmin.id]
-      );
-    }
+  const host = String(req.body?.host || '').trim();
+  const port = Number(req.body?.port || 3306);
+  const database = String(req.body?.database || '').trim();
+  const username = String(req.body?.username || '').trim();
+  const password = String(req.body?.password ?? '');
+  const ssl = Boolean(req.body?.ssl);
+
+  const check = await testDirectConnection({ host, port, database, username, password, ssl });
+  if (!check.ok) {
+    return res.status(422).json({
+      ...check,
+      message: check.message || 'Could not connect to remote MySQL server.',
+    });
   }
 
-  const instRow = await queryOne(`SELECT id FROM installer_state ORDER BY id ASC LIMIT 1`);
-  if (instRow) {
-    await execute(
-      `UPDATE installer_state SET installed = 1, installed_at = ?, app_name = ?, admin_email = ?, db_driver = 'mysql' WHERE id = ?`,
-      [now, appName, adminEmail, instRow.id]
-    );
-  } else {
-    await execute(
-      `INSERT INTO installer_state (installed, installed_at, app_name, admin_email, db_driver) VALUES (1, ?, ?, ?, 'mysql')`,
-      [now, appName, adminEmail]
-    );
+  if (env.configKv) {
+    const payload = { host, port, database, username, password, ssl };
+    await env.configKv.put('mysql_config', JSON.stringify(payload));
+    setCachedKvDbConfig(payload);
+    clearCachedDbDefaults();
+    clearSchemaCache();
+    return res.json({
+      saved_to: 'kv',
+      ok: true,
+      ...check,
+      message: 'Remote MySQL connection verified and saved to Cloudflare KV (CONFIG_KV).',
+    });
   }
 
   return res.json({
-    message: 'EasyPlex installation configured successfully.',
-    admin_email: adminEmail,
+    saved_to: 'env_required',
+    ok: true,
+    ...check,
+    message:
+      'Connection verified! Add CONFIG_KV binding for browser persistence, or save DB_* variables in Cloudflare Dashboard -> Settings -> Variables and Secrets.',
   });
 });
 

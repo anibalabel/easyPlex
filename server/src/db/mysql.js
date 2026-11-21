@@ -44,9 +44,127 @@ function buildConnectionOptions() {
     timezone: 'Z',
     charset: 'utf8mb4',
     disableEval: true,
-    connectTimeout: 20000,
+    connectTimeout: 10000,
     ...(env.dbSsl && !hd ? { ssl: { rejectUnauthorized: false } } : {}),
   };
+}
+
+export function explainMySqlError(err) {
+  const code = err?.code || 'MYSQL_ERROR';
+  const msg = err?.message || String(err);
+  let hint = '';
+  if (code === 'ETIMEDOUT') {
+    hint = 'TCP timeout on port 3306: verify your hosting firewall / cPanel Remote MySQL allows external connections (e.g. % host wildcard or Cloudflare Hyperdrive).';
+  } else if (code === 'ECONNREFUSED') {
+    hint = 'Connection refused: verify DB Host and Port (usually 3306) are open externally.';
+  } else if (code === 'ER_ACCESS_DENIED_ERROR') {
+    hint = 'Access denied: check DB Username/Password and ensure Remote MySQL grants access from external hosts (%).';
+  } else if (code === 'ER_BAD_DB_ERROR') {
+    hint = 'Database name does not exist on the MySQL server.';
+  } else if (code === 'ENOTFOUND') {
+    hint = 'Hostname could not be resolved by DNS.';
+  } else if (code === 'MISSING_CONFIG') {
+    hint = 'No remote MySQL host/database/username configured yet.';
+  }
+  return { code, message: msg, hint };
+}
+
+export async function testDirectConnection(overrideCfg = null) {
+  const startedAt = Date.now();
+  let opts;
+  try {
+    if (overrideCfg !== null) {
+      const host = String(overrideCfg.host || '').trim();
+      const port = Number(overrideCfg.port || 3306);
+      const database = String(overrideCfg.database || '').trim();
+      const user = String(overrideCfg.username || '').trim();
+      const password = String(overrideCfg.password ?? '');
+      if (!host || !database || !user) {
+        const missingErr = new Error('DB_HOST, DB_DATABASE and DB_USERNAME are required.');
+        missingErr.code = 'MISSING_CONFIG';
+        throw missingErr;
+      }
+      opts = {
+        host,
+        port,
+        database,
+        user,
+        password,
+        dateStrings: true,
+        timezone: 'Z',
+        charset: 'utf8mb4',
+        disableEval: true,
+        connectTimeout: 6000,
+        ...(overrideCfg.ssl ? { ssl: { rejectUnauthorized: false } } : {}),
+      };
+    } else {
+      try {
+        opts = { ...buildConnectionOptions(), connectTimeout: 6000 };
+      } catch (e) {
+        e.code = 'MISSING_CONFIG';
+        throw e;
+      }
+    }
+  } catch (err) {
+    return { ok: false, latency_ms: Date.now() - startedAt, ...explainMySqlError(err) };
+  }
+
+  let conn = null;
+  let timer = null;
+  try {
+    const runProbe = async () => {
+      conn = await mysql.createConnection(opts);
+      const [verRows] = await conn.query('SELECT VERSION() AS version');
+      const [tblRows] = await conn.query(
+        'SELECT COUNT(*) AS cnt FROM information_schema.tables WHERE table_schema = ?',
+        [opts.database]
+      );
+      let appName = '';
+      try {
+        const [sRows] = await conn.query('SELECT app_name FROM settings ORDER BY id ASC LIMIT 1');
+        appName = sRows?.[0]?.app_name || '';
+      } catch {
+        appName = '';
+      }
+      return {
+        ok: true,
+        latency_ms: Date.now() - startedAt,
+        mysql_version: verRows?.[0]?.version || 'MySQL',
+        tables_count: Number(tblRows?.[0]?.cnt || 0),
+        app_name: appName,
+        host: opts.host,
+        port: opts.port,
+        database: opts.database,
+        username: opts.user,
+      };
+    };
+
+    const timeoutPromise = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        try {
+          conn?.destroy?.();
+        } catch {
+          // ignore destroy failure
+        }
+        const err = new Error('connect ETIMEDOUT');
+        err.code = 'ETIMEDOUT';
+        reject(err);
+      }, 6500);
+    });
+
+    return await Promise.race([runProbe(), timeoutPromise]);
+  } catch (err) {
+    return { ok: false, latency_ms: Date.now() - startedAt, ...explainMySqlError(err) };
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (conn) {
+      try {
+        conn.destroy();
+      } catch {
+        // ignore
+      }
+    }
+  }
 }
 
 function getFallbackPool() {
@@ -92,22 +210,26 @@ async function getActiveExecutor() {
   return getFallbackPool();
 }
 
-export async function runWithRequestDb(cfEnv, fn) {
-  return runWithRuntimeEnv(cfEnv, async () => {
-    const reqCtx = { connPromise: null, connError: null, txDepth: 0 };
-    try {
-      return await requestDbStorage.run(reqCtx, fn);
-    } finally {
-      if (reqCtx.connPromise) {
-        try {
-          const conn = await reqCtx.connPromise;
-          await conn.end();
-        } catch {
-          // ignore teardown errors
+export async function runWithRequestDb(cfEnv, fn, kvDbConfig = null) {
+  return runWithRuntimeEnv(
+    cfEnv,
+    async () => {
+      const reqCtx = { connPromise: null, connError: null, txDepth: 0 };
+      try {
+        return await requestDbStorage.run(reqCtx, fn);
+      } finally {
+        if (reqCtx.connPromise) {
+          try {
+            const conn = await reqCtx.connPromise;
+            await conn.end();
+          } catch {
+            // ignore teardown errors
+          }
         }
       }
-    }
-  });
+    },
+    kvDbConfig
+  );
 }
 
 export async function verifyConnection() {

@@ -10,18 +10,11 @@ const cachedDbDefaults = {
   url: '',
   fetchedAt: 0,
 };
-const DB_DEFAULTS_TTL_MS = 60_000;
-
-export function getCachedDbDefaults() {
-  if (cachedDbDefaults.fetchedAt && Date.now() - cachedDbDefaults.fetchedAt < DB_DEFAULTS_TTL_MS) {
-    return cachedDbDefaults;
-  }
-  return null;
-}
-
-export function clearCachedDbDefaults() {
-  cachedDbDefaults.fetchedAt = 0;
-}
+const cachedKvDbConfig = {
+  value: null,
+  fetchedAt: 0,
+};
+const CACHE_TTL_MS = 60_000;
 
 // Only attempt dotenv loading when running under plain local Node (skipped cleanly inside Cloudflare Workers)
 try {
@@ -36,15 +29,46 @@ try {
   // Cloudflare Workers / Pages supply environment bindings directly per request
 }
 
-export function runWithRuntimeEnv(cfEnv, fn) {
+export function runWithRuntimeEnv(cfEnv, fn, kvDbConfig = null) {
   return runtimeEnvStorage.run(
     {
       bindings: cfEnv || {},
+      kvDbConfig: kvDbConfig || getCachedKvDbConfig()?.value || null,
       dbDefaults: {},
       requestOrigin: '',
     },
     fn
   );
+}
+
+export function getCachedKvDbConfig() {
+  if (cachedKvDbConfig.fetchedAt && Date.now() - cachedKvDbConfig.fetchedAt < CACHE_TTL_MS) {
+    return cachedKvDbConfig;
+  }
+  return null;
+}
+
+export function setCachedKvDbConfig(cfg) {
+  cachedKvDbConfig.value = cfg || null;
+  cachedKvDbConfig.fetchedAt = Date.now();
+  const store = runtimeEnvStorage.getStore();
+  if (store) store.kvDbConfig = cfg || null;
+}
+
+export function clearCachedKvDbConfig() {
+  cachedKvDbConfig.value = null;
+  cachedKvDbConfig.fetchedAt = 0;
+}
+
+export function getCachedDbDefaults() {
+  if (cachedDbDefaults.fetchedAt && Date.now() - cachedDbDefaults.fetchedAt < CACHE_TTL_MS) {
+    return cachedDbDefaults;
+  }
+  return null;
+}
+
+export function clearCachedDbDefaults() {
+  cachedDbDefaults.fetchedAt = 0;
 }
 
 export function setRuntimeDbDefaults({ jwt_secret, app_name, url, requestOrigin } = {}) {
@@ -88,6 +112,10 @@ export function getRuntimeBinding(name) {
   return runtimeEnvStorage.getStore()?.bindings?.[name] || null;
 }
 
+export function getActiveKvDbConfig() {
+  return runtimeEnvStorage.getStore()?.kvDbConfig || getCachedKvDbConfig()?.value || null;
+}
+
 export const env = {
   get port() {
     return Number(getRuntimeVar('PORT', 8787));
@@ -121,21 +149,24 @@ export const env = {
     return 'mysql';
   },
   get dbHost() {
-    return String(getRuntimeVar('DB_HOST', ''));
+    return String(getActiveKvDbConfig()?.host || getRuntimeVar('DB_HOST', ''));
   },
   get dbPort() {
-    return Number(getRuntimeVar('DB_PORT', 3306));
+    return Number(getActiveKvDbConfig()?.port || getRuntimeVar('DB_PORT', 3306));
   },
   get dbDatabase() {
-    return String(getRuntimeVar('DB_DATABASE', ''));
+    return String(getActiveKvDbConfig()?.database || getRuntimeVar('DB_DATABASE', ''));
   },
   get dbUsername() {
-    return String(getRuntimeVar('DB_USERNAME', ''));
+    return String(getActiveKvDbConfig()?.username || getRuntimeVar('DB_USERNAME', ''));
   },
   get dbPassword() {
-    return String(getRuntimeVar('DB_PASSWORD', ''));
+    const kvPass = getActiveKvDbConfig()?.password;
+    return String(kvPass !== undefined && kvPass !== '' ? kvPass : getRuntimeVar('DB_PASSWORD', ''));
   },
   get dbSsl() {
+    const kvSsl = getActiveKvDbConfig()?.ssl;
+    if (kvSsl !== undefined) return Boolean(kvSsl);
     return String(getRuntimeVar('DB_SSL', 'false')).toLowerCase() === 'true';
   },
   get dbPoolLimit() {
@@ -149,5 +180,8 @@ export const env = {
   },
   get storageBucket() {
     return getRuntimeBinding('STORAGE_BUCKET');
+  },
+  get configKv() {
+    return getRuntimeBinding('CONFIG_KV');
   },
 };

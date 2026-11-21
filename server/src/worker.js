@@ -1,5 +1,6 @@
 import { httpServerHandler } from 'cloudflare:node';
 import { buildApp } from './app.js';
+import { getCachedKvDbConfig, setCachedKvDbConfig } from './config/env.js';
 import { runWithRequestDb } from './db/mysql.js';
 
 const app = buildApp();
@@ -106,6 +107,21 @@ export default {
       }
     }
 
-    return runWithRequestDb(env, () => nodeHandler.fetch(request, env, ctx));
+    let kvDbConfig = null;
+    if (env.CONFIG_KV && !env.HYPERDRIVE) {
+      const cached = getCachedKvDbConfig();
+      if (cached) {
+        kvDbConfig = cached.value;
+      } else {
+        try {
+          kvDbConfig = await env.CONFIG_KV.get('mysql_config', 'json');
+          setCachedKvDbConfig(kvDbConfig || null);
+        } catch {
+          kvDbConfig = null;
+        }
+      }
+    }
+
+    return runWithRequestDb(env, () => nodeHandler.fetch(request, env, ctx), kvDbConfig);
   },
 };
