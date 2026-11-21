@@ -92,7 +92,7 @@ export function buildApp() {
       status: 'ok',
       app: env.appName,
       version: '2.4.21',
-      runtime: 'cloudflare-pages',
+      runtime: 'cloudflare-workers',
       db_connection: 'mysql',
     });
   });

@@ -7,7 +7,7 @@ import * as esbuild from 'esbuild';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, '..');
 const entryFile = path.join(rootDir, 'server/src/worker.js');
-const outFile = path.join(rootDir, 'dist/_worker.js');
+const outFile = path.join(rootDir, 'dist-worker/index.js');
 
 const builtins = new Set(builtinModules.map((m) => m.replace(/^node:/, '')));
 
@@ -45,4 +45,4 @@ await esbuild.build({
 });
 
 const sizeKb = (fs.statSync(outFile).size / 1024).toFixed(1);
-console.log(`Built Cloudflare Pages Worker: dist/_worker.js (${sizeKb} KB)`);
+console.log(`Built Cloudflare Worker: dist-worker/index.js (${sizeKb} KB)`);

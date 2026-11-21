@@ -6,8 +6,8 @@
   "description": "EasyPlex 2.4.21 Unified Full-Stack WebPanel & REST API for Cloudflare Pages + Remote MySQL",
   "scripts": {
     "build": "vite build && node scripts/build-worker.mjs",
-    "dev": "npm run build && wrangler pages dev dist",
-    "deploy": "npm run build && wrangler pages deploy dist"
+    "dev": "npm run build && wrangler dev",
+    "deploy": "npm run build && wrangler deploy"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.3",
