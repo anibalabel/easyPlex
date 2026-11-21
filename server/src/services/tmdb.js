@@ -1,4 +1,4 @@
-import { queryOne } from '../db/sqlite.js';
+import { queryOne } from '../db/mysql.js';
 import { env } from '../config/env.js';
 
 export async function getTmdbConfig() {

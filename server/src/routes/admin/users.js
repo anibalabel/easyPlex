@@ -7,7 +7,7 @@ import {
   queryAll,
   queryOne,
   runInTransaction,
-} from '../../db/sqlite.js';
+} from '../../db/mysql.js';
 import { makeAsyncRouter } from '../../middleware/asyncHandler.js';
 import { requireAdminOrModerator, requirePermission, sanitizeUser } from '../../middleware/auth.js';
 import { createDiskUpload, publicStorageUrl } from '../../middleware/upload.js';

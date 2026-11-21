@@ -1,5 +1,4 @@
 import crypto from 'node:crypto';
-import fs from 'node:fs';
 import path from 'node:path';
 import express from 'express';
 import {
@@ -7,7 +6,7 @@ import {
   nowIso,
   queryAll,
   queryOne,
-} from '../../db/sqlite.js';
+} from '../../db/mysql.js';
 import { makeAsyncRouter } from '../../middleware/asyncHandler.js';
 import {
   extractBearerOrCookieToken,
@@ -68,21 +67,9 @@ function parseListSetting(val) {
     .filter(Boolean);
 }
 
-function sendSafeSubpath(res, baseSubDir, rawSubpath, fallbackFile = null) {
-  const rootDir = ensureStorageDir(baseSubDir);
-  const rel = String(rawSubpath || '').replace(/^\/+/, '');
-  const resolved = path.resolve(rootDir, rel);
-  if (resolved.startsWith(rootDir + path.sep) && fs.existsSync(resolved) && fs.statSync(resolved).isFile()) {
-    return res.sendFile(resolved);
-  }
-  const byBase = path.join(rootDir, path.basename(rel));
-  if (fs.existsSync(byBase) && fs.statSync(byBase).isFile()) {
-    return res.sendFile(byBase);
-  }
-  if (fallbackFile && fs.existsSync(fallbackFile)) {
-    return res.sendFile(fallbackFile);
-  }
-  return res.status(404).json({ message: 'File not found' });
+function sendSafeSubpath(res, baseSubDir, rawSubpath, fallbackFlag = null) {
+  const rel = path.basename(String(rawSubpath || '').replace(/^\/+/, ''));
+  return sendStoredFile(res, baseSubDir, rel, fallbackFlag);
 }
 
 // ================= PUBLIC SETTINGS & COLORS =================
@@ -612,7 +599,7 @@ router.get('/api/webview', async (_req, res) => {
 });
 
 // ================= MEDIA, IMAGES & STREAM FILE SERVING =================
-const fallbackLogo = path.join(env.storageRoot, 'favicon.png');
+const fallbackLogo = true;
 
 router.get('/api/image/logo', (_req, res) => sendStoredFile(res, 'branding', 'logo.png', fallbackLogo));
 router.get('/api/image/minilogo', (_req, res) => sendStoredFile(res, 'branding', 'minilogo.png', fallbackLogo));

@@ -7,7 +7,7 @@ import {
   queryAll,
   queryOne,
   randomOrderSql,
-} from '../../db/sqlite.js';
+} from '../../db/mysql.js';
 import { makeAsyncRouter } from '../../middleware/asyncHandler.js';
 import { hydrateMediaRecord } from '../../services/mediaCatalog.js';
 import {

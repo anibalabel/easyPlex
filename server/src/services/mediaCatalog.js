@@ -1,4 +1,4 @@
-import { queryAll, queryOne, execute, nowIso } from '../db/sqlite.js';
+import { queryAll, queryOne, execute, nowIso } from '../db/mysql.js';
 import { tmdbGet, getTmdbConfig } from './tmdb.js';
 
 export const MEDIA_SCHEMAS = {

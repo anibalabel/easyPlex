@@ -10,7 +10,7 @@ import {
   queryAll,
   queryOne,
   runInTransaction,
-} from '../../db/sqlite.js';
+} from '../../db/mysql.js';
 import { makeAsyncRouter } from '../../middleware/asyncHandler.js';
 import {
   requireAdminOrModerator,
@@ -401,22 +401,15 @@ router.post('/admin/settings/database-backup', requirePermission('settings.updat
   const zip = new AdmZip();
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
 
-  if (isMySql()) {
-    const tablesRows = await queryAll('SHOW TABLES');
-    const tables = {};
-    for (const row of tablesRows) {
-      const tableName = Object.values(row)[0];
-      if (!tableName) continue;
-      tables[tableName] = await queryAll(`SELECT * FROM \`${String(tableName).replace(/`/g, '')}\``);
-    }
-    const payload = JSON.stringify({ database: env.dbDatabase, exported_at: nowIso(), tables }, null, 2);
-    zip.addFile(`easyplex-mysql-backup-${stamp}.json`, Buffer.from(payload, 'utf8'));
-  } else {
-    if (!fs.existsSync(env.sqlitePath)) {
-      return res.status(404).json({ message: 'Database file not found' });
-    }
-    zip.addLocalFile(env.sqlitePath);
+  const tablesRows = await queryAll('SHOW TABLES');
+  const tables = {};
+  for (const row of tablesRows) {
+    const tableName = Object.values(row)[0];
+    if (!tableName || tableName === 'uploaded_files') continue;
+    tables[tableName] = await queryAll(`SELECT * FROM \`${String(tableName).replace(/`/g, '')}\``);
   }
+  const payload = JSON.stringify({ database: env.dbDatabase, exported_at: nowIso(), tables }, null, 2);
+  zip.addFile(`easyplex-mysql-backup-${stamp}.json`, Buffer.from(payload, 'utf8'));
 
   const buffer = zip.toBuffer();
   res.setHeader('Content-Type', 'application/zip');
@@ -478,10 +471,10 @@ router.all(
       valid: true,
       activated: true,
       version: s?.webpanelversion || '2.4.21',
-      installation_hash: sha256(env.projectRoot),
-      purchase_key: s?.purchase_key || 'LOCAL-DEV',
-      activated_domain: s?.activated_domain || 'localhost',
-      message: 'Local panel active.',
+      installation_hash: sha256(env.appUrl),
+      purchase_key: s?.purchase_key || 'CLOUDFLARE',
+      activated_domain: s?.activated_domain || new URL(env.appUrl).hostname,
+      message: 'Remote panel active.',
     });
   }
 );

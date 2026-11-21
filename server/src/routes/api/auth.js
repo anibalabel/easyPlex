@@ -7,7 +7,7 @@ import {
   nowIso,
   queryAll,
   queryOne,
-} from '../../db/sqlite.js';
+} from '../../db/mysql.js';
 import { makeAsyncRouter } from '../../middleware/asyncHandler.js';
 import {
   extractBearerOrCookieToken,

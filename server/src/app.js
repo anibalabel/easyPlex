@@ -1,13 +1,8 @@
 import express from 'express';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
-import fs from 'fs';
-import path from 'path';
 
 import { env } from './config/env.js';
-import { closeDb, isMySql, verifyConnection } from './db/sqlite.js';
-import { initSchema } from './db/schema.js';
-import { ensureCoreSeed, seedDemoData } from './db/seed.js';
 import { attachAuthUser } from './middleware/auth.js';
 import {
   apiSecurityHeaders,
@@ -36,12 +31,7 @@ import apiCatalogRoutes from './routes/api/catalog.js';
 import apiPlayerMonetizationRoutes from './routes/api/playerMonetization.js';
 import apiSystemRoutes from './routes/api/system.js';
 
-export async function createApp() {
-  await verifyConnection();
-  await initSchema();
-  await ensureCoreSeed();
-  await seedDemoData();
-
+export function buildApp() {
   const app = express();
   app.set('trust proxy', 1);
 
@@ -73,7 +63,8 @@ export async function createApp() {
       status: 'ok',
       app: env.appName,
       version: '2.4.21',
-      db_connection: env.dbConnection,
+      runtime: 'cloudflare-pages',
+      db_connection: 'mysql',
     });
   });
 
@@ -101,17 +92,6 @@ export async function createApp() {
   app.use(adminMonetizationRoutes);
   app.use(adminSettingsRoutes);
 
-  // Serve built React frontend if available
-  if (fs.existsSync(env.clientDistDir)) {
-    app.use(express.static(env.clientDistDir));
-    app.get('*', (req, res, next) => {
-      if (req.path.startsWith('/api/') || req.path.startsWith('/admin/') || req.path.startsWith('/installer-api/')) {
-        return next();
-      }
-      return res.sendFile(path.join(env.clientDistDir, 'index.html'));
-    });
-  }
-
   // Global error handler
   app.use((err, _req, res, _next) => {
     console.error('[EasyPlex Error]', err);
@@ -124,39 +104,3 @@ export async function createApp() {
 
   return app;
 }
-
-const isMain =
-  process.argv[1] &&
-  path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'));
-
-if (isMain) {
-  try {
-    const app = await createApp();
-    const targetInfo = isMySql()
-      ? `MySQL ${env.dbUsername}@${env.dbHost}:${env.dbPort}/${env.dbDatabase}`
-      : `SQLite ${env.sqlitePath}`;
-    const server = app.listen(env.port, () => {
-      console.log(`EasyPlex 2.4.21 Backend listening on http://localhost:${env.port} [${targetInfo}]`);
-    });
-    const shutdown = async () => {
-      server.close();
-      await closeDb();
-      process.exit(0);
-    };
-    process.on('SIGINT', shutdown);
-    process.on('SIGTERM', shutdown);
-  } catch (err) {
-    const details =
-      err?.message ||
-      err?.code ||
-      (Array.isArray(err?.errors) ? err.errors.map((e) => e.message || e.code).join('; ') : '') ||
-      String(err);
-    console.error(
-      `[EasyPlex Startup Error] Failed to initialize ${isMySql() ? `MySQL (${env.dbHost}:${env.dbPort}/${env.dbDatabase})` : `SQLite (${env.sqlitePath})`}: ${details}`
-    );
-    await closeDb().catch(() => {});
-    process.exit(1);
-  }
-}
-
-export default createApp;

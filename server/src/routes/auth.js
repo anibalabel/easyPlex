@@ -1,10 +1,9 @@
-import fs from 'node:fs';
 import { Router } from 'express';
 import { env } from '../config/env.js';
 import { SUPPORTED_LOCALES, LOCALE_MESSAGES } from '../config/locales.js';
 import { VISIBLE_PERMISSION_KEYS, PERMISSION_DEFINITIONS } from '../config/permissions.js';
-import { execute, nowIso, queryAll, queryOne, isMySql, hasColumn } from '../db/sqlite.js';
-import { ensureCoreSeed, seedDemoData } from '../db/seed.js';
+import { execute, nowIso, queryAll, queryOne, hasColumn } from '../db/mysql.js';
+import { ensureAuxMySqlTables } from '../db/schema.js';
 import { hashPassword, randomHex, signAuthToken, verifyPassword } from '../services/crypto.js';
 import { getUserWithPermissions, requireAdminOrModerator, touchLastLogin } from '../middleware/auth.js';
 import { makeAsyncRouter } from '../middleware/asyncHandler.js';
@@ -211,6 +210,7 @@ router.post('/admin/locale', (req, res) => {
 
 // Installer routes
 router.get('/installer-api/status', async (_req, res) => {
+  await ensureAuxMySqlTables();
   const state = await queryOne(`SELECT * FROM installer_state ORDER BY id ASC LIMIT 1`);
   const settings = await queryOne(`SELECT app_name, url, tmdb_api_key FROM settings ORDER BY id ASC LIMIT 1`);
   return res.json({
@@ -219,24 +219,40 @@ router.get('/installer-api/status', async (_req, res) => {
     app_name: settings?.app_name || env.appName,
     app_url: settings?.url || env.appUrl,
     tmdb_configured: Boolean(settings?.tmdb_api_key),
-    db_driver: isMySql() ? `mysql (${env.dbHost}:${env.dbPort}/${env.dbDatabase})` : 'sqlite (node:sqlite)',
-    node_version: process.version,
+    db_driver: `mysql (${env.dbHost || 'hyperdrive'}:${env.dbPort}/${env.dbDatabase})`,
+    node_version: 'Cloudflare Pages (nodejs_compat)',
   });
 });
 
-router.get('/installer-api/requirements', (_req, res) => {
-  const nodeMajor = parseInt(process.versions.node.split('.')[0], 10);
+router.get('/installer-api/requirements', async (_req, res) => {
+  let mysqlOk = false;
+  try {
+    await queryOne('SELECT 1 AS ok');
+    mysqlOk = true;
+  } catch {
+    mysqlOk = false;
+  }
   const requirements = [
-    { name: `Node.js >= 20.0 (${process.version})`, passed: nodeMajor >= 20 },
-    { name: isMySql() ? 'MySQL2 Connection Pool Driver' : 'Built-in node:sqlite (DatabaseSync)', passed: true },
-    { name: 'File System Upload Support (multer)', passed: true },
+    { name: 'Cloudflare Pages Edge Runtime (nodejs_compat)', passed: true },
+    { name: 'Remote MySQL2 Connection Driver', passed: mysqlOk },
+    { name: 'Cloudflare R2 / MySQL File Storage', passed: true },
     { name: 'JSON & Crypto Engine', passed: true },
     { name: 'TMDB External API Fetch', passed: typeof fetch === 'function' },
   ];
 
   const storagePaths = [
-    { folder: isMySql() ? 'mysql' : 'server/data', path: isMySql() ? `${env.dbHost}:${env.dbPort}/${env.dbDatabase}` : env.sqlitePath, writable: true, permission: 'rw' },
-    { folder: 'server/storage', path: env.storageRoot, writable: fs.existsSync(env.storageRoot), permission: 'rw' },
+    {
+      folder: 'mysql',
+      path: `${env.dbHost || 'hyperdrive'}:${env.dbPort}/${env.dbDatabase}`,
+      writable: mysqlOk,
+      permission: 'rw',
+    },
+    {
+      folder: env.storageBucket ? 'cloudflare-r2' : 'mysql:uploaded_files',
+      path: env.storageBucket ? 'R2 STORAGE_BUCKET Binding' : `${env.dbDatabase}.uploaded_files`,
+      writable: mysqlOk,
+      permission: 'rw',
+    },
   ];
 
   return res.json({
@@ -253,13 +269,9 @@ router.post('/installer-api/finish', async (req, res) => {
   const adminEmail = String(req.body?.admin_email || 'admin@easyplex.com').trim().toLowerCase();
   const adminName = String(req.body?.admin_name || 'admin').trim() || 'admin';
   const adminPassword = String(req.body?.admin_password || '').trim();
-  const seedDemo = Boolean(req.body?.seed_demo);
   const now = nowIso();
 
-  await ensureCoreSeed();
-  if (seedDemo) {
-    await seedDemoData();
-  }
+  await ensureAuxMySqlTables();
 
   const sRow = await queryOne(`SELECT id FROM settings ORDER BY id ASC LIMIT 1`);
   if (sRow) {
@@ -287,8 +299,13 @@ router.post('/installer-api/finish', async (req, res) => {
   const instRow = await queryOne(`SELECT id FROM installer_state ORDER BY id ASC LIMIT 1`);
   if (instRow) {
     await execute(
-      `UPDATE installer_state SET installed = 1, installed_at = ?, app_name = ?, admin_email = ? WHERE id = ?`,
+      `UPDATE installer_state SET installed = 1, installed_at = ?, app_name = ?, admin_email = ?, db_driver = 'mysql' WHERE id = ?`,
       [now, appName, adminEmail, instRow.id]
+    );
+  } else {
+    await execute(
+      `INSERT INTO installer_state (installed, installed_at, app_name, admin_email, db_driver) VALUES (1, ?, ?, ?, 'mysql')`,
+      [now, appName, adminEmail]
     );
   }
 
@@ -296,12 +313,6 @@ router.post('/installer-api/finish', async (req, res) => {
     message: 'EasyPlex installation configured successfully.',
     admin_email: adminEmail,
   });
-});
-
-router.post('/installer-api/reseed-demo', requireAdminOrModerator, async (_req, res) => {
-  await ensureCoreSeed();
-  await seedDemoData();
-  return res.json({ message: 'Demo catalog seeded if empty.' });
 });
 
 export { VISIBLE_PERMISSION_KEYS };

@@ -1,24 +1,21 @@
 import express from 'express';
-import fs from 'fs';
-import path from 'path';
-import { execFile } from 'child_process';
-import multer from 'multer';
+import path from 'node:path';
+import { env } from '../../config/env.js';
 import {
   execute,
-  isMySql,
   nowIso,
   paginateQuery,
   queryAll,
   queryOne,
   runInTransaction,
-} from '../../db/sqlite.js';
+} from '../../db/mysql.js';
 import { makeAsyncRouter } from '../../middleware/asyncHandler.js';
 import {
   requireAdminOrModerator,
   requirePermission,
 } from '../../middleware/auth.js';
 import {
-  ensureStorageDir,
+  createDiskUpload,
   publicStorageUrl,
 } from '../../middleware/upload.js';
 import { randomCode } from '../../services/crypto.js';
@@ -26,35 +23,8 @@ import { randomCode } from '../../services/crypto.js';
 const router = makeAsyncRouter(express.Router());
 router.use('/admin', requireAdminOrModerator);
 
-const videosDir = ensureStorageDir('videos');
-const chunksBaseDir = ensureStorageDir('video_chunks');
-
-const videoUpload = multer({
-  storage: multer.diskStorage({
-    destination: (_req, _file, cb) => cb(null, videosDir),
-    filename: (_req, file, cb) => {
-      const ext = path.extname(file.originalname || '.mp4') || '.mp4';
-      cb(null, `${Date.now()}_${randomCode(8)}${ext}`);
-    },
-  }),
-  limits: { fileSize: 2048 * 1024 * 1024 },
-});
-
-const chunkUpload = multer({
-  storage: multer.diskStorage({
-    destination: (req, _file, cb) => {
-      const uploadId = String(req.body.upload_id || req.headers['x-upload-id'] || 'default').replace(/[^a-zA-Z0-9_-]/g, '');
-      const dir = path.join(chunksBaseDir, uploadId);
-      fs.mkdirSync(dir, { recursive: true });
-      cb(null, dir);
-    },
-    filename: (req, _file, cb) => {
-      const idx = String(req.body.chunk_index ?? req.headers['x-chunk-index'] ?? '0').replace(/[^0-9]/g, '');
-      cb(null, `chunk_${idx.padStart(6, '0')}`);
-    },
-  }),
-  limits: { fileSize: 100 * 1024 * 1024 },
-});
+const videoUpload = createDiskUpload('videos', { preserveExtension: true, maxSizeMb: 95 });
+const chunkUpload = createDiskUpload('video_chunks', { preserveExtension: true, maxSizeMb: 95 });
 
 function normalizeVideoFormat(filename) {
   const ext = path.extname(filename || '').replace('.', '').toLowerCase();
@@ -135,45 +105,28 @@ router.post('/admin/video/upload-chunk', requirePermission('video_conversion.cre
     status: 200,
     upload_id: req.body.upload_id || 'default',
     chunk_index: Number(req.body.chunk_index || 0),
+    filename: req.file.filename,
     received: true,
   });
 });
 
 router.post('/admin/video/complete-chunked-upload', requirePermission('video_conversion.create'), async (req, res) => {
-  const uploadId = String(req.body.upload_id || 'default').replace(/[^a-zA-Z0-9_-]/g, '');
-  const chunkDir = path.join(chunksBaseDir, uploadId);
-  if (!fs.existsSync(chunkDir)) {
-    return res.status(404).json({ status: 404, message: 'Upload chunks not found' });
+  const filename = path.basename(String(req.body.filename || req.body.source_url || ''));
+  if (!filename) {
+    return res.status(400).json({ status: 400, message: 'Uploaded filename is required on Cloudflare Pages.' });
   }
-  const files = fs.readdirSync(chunkDir).sort();
-  const ext = path.extname(req.body.filename || 'video.mp4') || '.mp4';
-  const finalName = `${Date.now()}_${randomCode(8)}${ext}`;
-  const finalPath = path.join(videosDir, finalName);
-
-  const fd = fs.openSync(finalPath, 'w');
-  try {
-    for (const f of files) {
-      const buf = fs.readFileSync(path.join(chunkDir, f));
-      fs.writeSync(fd, buf);
-    }
-  } finally {
-    fs.closeSync(fd);
-  }
-  fs.rmSync(chunkDir, { recursive: true, force: true });
-
-  const stats = fs.existsSync(finalPath) ? fs.statSync(finalPath) : { size: 0 };
   const result = await createVideoRecordAndJob({
     req,
-    filename: finalName,
-    originalName: req.body.filename || finalName,
-    fileSize: stats.size,
+    filename,
+    originalName: req.body.filename || filename,
+    fileSize: Number(req.body.file_size || 0),
     movieId: req.body.movie_id ? Number(req.body.movie_id) : null,
     episodeId: req.body.episode_id ? Number(req.body.episode_id) : null,
     type: req.body.episode_id ? 'episode' : req.body.type || 'full_movie',
     selectedQualities: req.body.qualities || ['720p', '1080p'],
   });
 
-  return res.json({ status: 200, message: 'Chunked upload completed', ...result });
+  return res.json({ status: 200, message: 'Upload registered', ...result });
 });
 
 // Direct upload / upload with qualities
@@ -299,10 +252,9 @@ router.all('/admin/video-jobs/:jobId/retry', requirePermission('video_conversion
 router.all('/admin/video-jobs/:jobId/cancel', requirePermission('video_conversion.edit'), async (req, res) => {
   if (req.method !== 'PATCH' && req.method !== 'POST') return res.status(405).json({ message: 'Method not allowed' });
   const now = nowIso();
-  const nextStatus = isMySql() ? 'failed' : 'cancelled';
   await execute(
-    `UPDATE video_processing_jobs SET status = ?, message = 'Cancelled by administrator', failed_at = ?, updated_at = ? WHERE job_id = ? OR id = ?`,
-    [nextStatus, now, now, req.params.jobId, Number(req.params.jobId) || -1]
+    `UPDATE video_processing_jobs SET status = 'failed', message = 'Cancelled by administrator', failed_at = ?, updated_at = ? WHERE job_id = ? OR id = ?`,
+    [now, now, req.params.jobId, Number(req.params.jobId) || -1]
   );
   return res.json({ status: 200, message: 'Job cancelled' });
 });
@@ -389,14 +341,11 @@ router.delete('/admin/videos/:identifier', requirePermission('video_conversion.d
     idOrCode,
   ]);
   if (video && video.path && video.storage === 'local') {
-    const target = path.join(videosDir, path.basename(video.path));
-    if (fs.existsSync(target)) {
-      try {
-        fs.unlinkSync(target);
-      } catch {
-        /* ignore */
-      }
+    const cleanName = path.basename(video.path);
+    if (env.storageBucket) {
+      await env.storageBucket.delete(`videos/${cleanName}`).catch(() => {});
     }
+    await execute('DELETE FROM uploaded_files WHERE folder = ? AND filename = ?', ['videos', cleanName]).catch(() => {});
   }
   await execute('DELETE FROM videos WHERE id = ? OR code = ?', [Number(idOrCode) || -1, idOrCode]);
   return res.json({ status: 200, message: 'Video deleted' });
@@ -442,38 +391,30 @@ router.post('/admin/queue/stop', requirePermission('video_conversion.edit'), (_r
 
 router.get('/admin/php-config', requirePermission('video_conversion.view'), async (_req, res) => {
   const s = await queryOne('SELECT upload_max_kb FROM settings LIMIT 1');
+  const rssMb = typeof process?.memoryUsage === 'function' ? `${Math.round(process.memoryUsage().rss / 1024 / 1024)}M RSS` : 'Edge Isolate (128M+)';
   return res.json({
-    runtime: `Node.js ${process.version}`,
-    platform: process.platform,
-    upload_max_filesize: `${Math.round((s?.upload_max_kb || 2097152) / 1024)}M`,
-    post_max_size: '2048M',
-    memory_limit: `${Math.round(process.memoryUsage().rss / 1024 / 1024)}M RSS`,
-    max_execution_time: 'unlimited',
+    runtime: 'Cloudflare Pages Worker (nodejs_compat)',
+    platform: 'cloudflare-pages',
+    upload_max_filesize: `${Math.round((s?.upload_max_kb || 97280) / 1024)}M`,
+    post_max_size: '100M',
+    memory_limit: rssMb,
+    max_execution_time: 'edge-streaming',
   });
 });
 
 router.get('/admin/storage-config', requirePermission('video_conversion.view'), async (_req, res) => {
   const s =
     (await queryOne(
-      'SELECT aws_s3_storage, aws_bucket, aws_default_region, wasabi_storage, wasabi_bucket, wasabi_default_region FROM settings LIMIT 1'
+      'SELECT r2_storage, r2_bucket, bunny_storage, bunny_storage_zone, aws_s3_storage, aws_bucket, aws_default_region, wasabi_storage, wasabi_bucket, wasabi_default_region FROM settings LIMIT 1'
     )) || {};
-  let localFiles = 0;
-  let totalBytes = 0;
-  if (fs.existsSync(videosDir)) {
-    for (const f of fs.readdirSync(videosDir)) {
-      localFiles += 1;
-      try {
-        totalBytes += fs.statSync(path.join(videosDir, f)).size;
-      } catch {
-        /* ignore */
-      }
-    }
-  }
+  const stats = await queryOne('SELECT COUNT(*) AS cnt, COALESCE(SUM(size_bytes), 0) AS bytes FROM uploaded_files WHERE folder = ?', ['videos']).catch(() => ({ cnt: 0, bytes: 0 }));
   return res.json({
-    driver: s.aws_s3_storage ? 's3' : s.wasabi_storage ? 'wasabi' : 'local',
-    local_path: videosDir,
-    local_files: localFiles,
-    local_size_bytes: totalBytes,
+    driver: env.storageBucket ? 'cloudflare-r2' : s.r2_storage ? 'r2' : s.bunny_storage ? 'bunny' : s.aws_s3_storage ? 's3' : s.wasabi_storage ? 'wasabi' : 'mysql-blob',
+    local_path: env.storageBucket ? 'R2: STORAGE_BUCKET' : 'MySQL: uploaded_files',
+    local_files: Number(stats?.cnt || 0),
+    local_size_bytes: Number(stats?.bytes || 0),
+    r2_storage: Boolean(s.r2_storage || env.storageBucket),
+    r2_bucket: s.r2_bucket || '',
     aws_s3_storage: Boolean(s.aws_s3_storage),
     aws_bucket: s.aws_bucket || '',
     aws_default_region: s.aws_default_region || '',
@@ -484,24 +425,12 @@ router.get('/admin/storage-config', requirePermission('video_conversion.view'), 
 });
 
 router.get('/admin/video-debug/test-ffmpeg', requirePermission('video_conversion.view'), async (_req, res) => {
-  const s = await queryOne('SELECT ffmpeg_binaries, ffprobe_binaries FROM settings LIMIT 1');
-  const ffmpegBin = s?.ffmpeg_binaries || 'ffmpeg';
-  const result = await new Promise((resolve) => {
-    execFile(ffmpegBin, ['-version'], { timeout: 4000 }, (err, stdout) => {
-      if (err) {
-        resolve({
-          available: false,
-          binary: ffmpegBin,
-          message: 'FFmpeg binary not found on PATH; direct video uploads & streaming work without transcoding.',
-          error: err.message,
-        });
-        return;
-      }
-      const firstLine = String(stdout || '').split('\n')[0]?.trim();
-      resolve({ available: true, binary: ffmpegBin, version: firstLine });
-    });
+  const s = await queryOne('SELECT ffmpeg_binaries FROM settings LIMIT 1');
+  return res.json({
+    available: false,
+    binary: s?.ffmpeg_binaries || 'ffmpeg',
+    message: 'Cloudflare Pages Workers run serverless without local OS binaries; use external video/HLS URLs or R2/Bunny CDN URLs.',
   });
-  return res.json(result);
 });
 
 export default router;

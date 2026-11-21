@@ -1,4 +1,4 @@
-import { execute, nowIso, queryOne, runInTransaction } from '../db/sqlite.js';
+import { execute, nowIso, queryOne, runInTransaction } from '../db/mysql.js';
 
 export const CREDIT_CONTENT_TYPES = [
   'movie',

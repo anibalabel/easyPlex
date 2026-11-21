@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { execute, nowIso, paginateQuery, queryAll, queryOne } from '../../db/sqlite.js';
+import { execute, nowIso, paginateQuery, queryAll, queryOne } from '../../db/mysql.js';
 import { requireAdminOrModerator, requirePermission } from '../../middleware/auth.js';
 import { createDiskUpload, publicStorageUrl } from '../../middleware/upload.js';
 import { makeAsyncRouter } from '../../middleware/asyncHandler.js';

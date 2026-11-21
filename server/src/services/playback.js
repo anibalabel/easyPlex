@@ -1,5 +1,5 @@
 import { env } from '../config/env.js';
-import { queryAll, queryOne } from '../db/sqlite.js';
+import { queryAll, queryOne } from '../db/mysql.js';
 import { getCreditStatus } from './credits.js';
 
 export const MOBILE_HIDDEN_SETTING_FIELDS = [

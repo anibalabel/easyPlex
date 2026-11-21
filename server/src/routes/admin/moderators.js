@@ -7,7 +7,7 @@ import {
   queryAll,
   queryOne,
   runInTransaction,
-} from '../../db/sqlite.js';
+} from '../../db/mysql.js';
 import { makeAsyncRouter } from '../../middleware/asyncHandler.js';
 import { requireAdminOnly } from '../../middleware/auth.js';
 import { hashPassword } from '../../services/crypto.js';

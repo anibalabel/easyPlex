@@ -1,4 +1,4 @@
-import { queryAll, queryOne, execute, nowIso } from '../db/sqlite.js';
+import { queryAll, queryOne, execute, nowIso } from '../db/mysql.js';
 import { verifyAuthToken } from '../services/crypto.js';
 import { VISIBLE_PERMISSION_KEYS } from '../config/permissions.js';
 

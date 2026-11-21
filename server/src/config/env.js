@@ -1,33 +1,93 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import dotenv from 'dotenv';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const serverRoot = path.resolve(__dirname, '..', '..');
-const projectRoot = path.resolve(serverRoot, '..');
+const runtimeEnvStorage = new AsyncLocalStorage();
 
-dotenv.config({ path: path.join(projectRoot, '.env') });
+// Only attempt dotenv loading when running under plain local Node (skipped cleanly inside Cloudflare Workers)
+try {
+  const isWorkersRuntime =
+    typeof navigator !== 'undefined' && navigator.userAgent === 'Cloudflare-Workers';
+  if (!isWorkersRuntime && typeof process !== 'undefined' && process.cwd) {
+    const dirname = path.dirname(fileURLToPath(import.meta.url));
+    const projectRoot = path.resolve(dirname, '..', '..', '..');
+    dotenv.config({ path: path.join(projectRoot, '.env') });
+  }
+} catch {
+  // Cloudflare Workers / Pages supply environment bindings directly per request
+}
+
+export function runWithRuntimeEnv(cfEnv, fn) {
+  return runtimeEnvStorage.run(cfEnv || {}, fn);
+}
+
+export function getRuntimeVar(key, fallback = '') {
+  const cfStore = runtimeEnvStorage.getStore();
+  if (cfStore && cfStore[key] !== undefined && cfStore[key] !== null && cfStore[key] !== '') {
+    return cfStore[key];
+  }
+  if (typeof process !== 'undefined' && process.env && process.env[key] !== undefined && process.env[key] !== '') {
+    return process.env[key];
+  }
+  return fallback;
+}
+
+export function getRuntimeBinding(name) {
+  return runtimeEnvStorage.getStore()?.[name] || null;
+}
 
 export const env = {
-  port: Number(process.env.PORT || 8000),
-  nodeEnv: process.env.NODE_ENV || 'development',
-  appName: process.env.APP_NAME || 'EASYPLEX',
-  appUrl: (process.env.APP_URL || 'http://localhost:8000').replace(/\/+$/, ''),
-  frontendUrl: (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/+$/, ''),
-  jwtSecret: process.env.JWT_SECRET || 'easyplex-local-dev-jwt-secret',
-  sessionSecret: process.env.SESSION_SECRET || 'easyplex-local-dev-session-secret',
-  dbConnection: String(process.env.DB_CONNECTION || 'sqlite').toLowerCase() === 'mysql' ? 'mysql' : 'sqlite',
-  dbHost: process.env.DB_HOST || '127.0.0.1',
-  dbPort: Number(process.env.DB_PORT || 3306),
-  dbDatabase: process.env.DB_DATABASE || '',
-  dbUsername: process.env.DB_USERNAME || '',
-  dbPassword: process.env.DB_PASSWORD || '',
-  dbSsl: String(process.env.DB_SSL || 'false').toLowerCase() === 'true',
-  sqlitePath: path.resolve(serverRoot, process.env.SQLITE_PATH || './data/easyplex.sqlite'),
-  tmdbApiKey: process.env.TMDB_API_KEY || '',
-  demoMode: String(process.env.DEMO_MODE || 'false').toLowerCase() === 'true',
-  serverRoot,
-  projectRoot,
-  storageRoot: path.join(serverRoot, 'storage'),
-  clientDistDir: path.join(projectRoot, 'client', 'dist'),
+  get port() {
+    return Number(getRuntimeVar('PORT', 8787));
+  },
+  get nodeEnv() {
+    return String(getRuntimeVar('NODE_ENV', 'production'));
+  },
+  get appName() {
+    return String(getRuntimeVar('APP_NAME', 'easyplex-mobile'));
+  },
+  get appUrl() {
+    const raw = getRuntimeVar('APP_URL') || getRuntimeVar('CF_PAGES_URL') || 'https://easyplex.pages.dev';
+    return String(raw).replace(/\/+$/, '');
+  },
+  get jwtSecret() {
+    return String(getRuntimeVar('JWT_SECRET', 'easyplex-jwt-secret-change-in-cloudflare-env'));
+  },
+  get sessionSecret() {
+    return String(getRuntimeVar('SESSION_SECRET', 'easyplex-session-secret-change-in-cloudflare-env'));
+  },
+  get dbConnection() {
+    return 'mysql';
+  },
+  get dbHost() {
+    return String(getRuntimeVar('DB_HOST', ''));
+  },
+  get dbPort() {
+    return Number(getRuntimeVar('DB_PORT', 3306));
+  },
+  get dbDatabase() {
+    return String(getRuntimeVar('DB_DATABASE', ''));
+  },
+  get dbUsername() {
+    return String(getRuntimeVar('DB_USERNAME', ''));
+  },
+  get dbPassword() {
+    return String(getRuntimeVar('DB_PASSWORD', ''));
+  },
+  get dbSsl() {
+    return String(getRuntimeVar('DB_SSL', 'false')).toLowerCase() === 'true';
+  },
+  get dbPoolLimit() {
+    return Math.max(1, Number(getRuntimeVar('DB_POOL_LIMIT', 3)));
+  },
+  get tmdbApiKey() {
+    return String(getRuntimeVar('TMDB_API_KEY', ''));
+  },
+  get hyperdrive() {
+    return getRuntimeBinding('HYPERDRIVE');
+  },
+  get storageBucket() {
+    return getRuntimeBinding('STORAGE_BUCKET');
+  },
 };

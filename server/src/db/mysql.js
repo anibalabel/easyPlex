@@ -1,87 +1,114 @@
-import fs from 'node:fs';
-import path from 'node:path';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { DatabaseSync } from 'node:sqlite';
 import mysql from 'mysql2/promise';
-import { env } from '../config/env.js';
+import { env, runWithRuntimeEnv } from '../config/env.js';
 
-let sqliteInstance = null;
-let mysqlPool = null;
-let sqliteTxDepth = 0;
+let fallbackPool = null;
 
+const requestDbStorage = new AsyncLocalStorage();
 const txStorage = new AsyncLocalStorage();
 const tableColumnsCache = new Map();
 
 export function isMySql() {
-  return env.dbConnection === 'mysql';
+  return true;
 }
 
 export function randomOrderSql() {
-  return isMySql() ? 'RAND()' : 'RANDOM()';
+  return 'RAND()';
 }
 
 export function castAsText(expr) {
-  return isMySql() ? `CAST(${expr} AS CHAR)` : `CAST(${expr} AS TEXT)`;
+  return `CAST(${expr} AS CHAR)`;
 }
 
-export function getDb() {
-  if (isMySql()) {
-    if (!mysqlPool) {
-      mysqlPool = mysql.createPool({
-        host: env.dbHost,
-        port: env.dbPort,
-        database: env.dbDatabase,
-        user: env.dbUsername,
-        password: env.dbPassword,
-        waitForConnections: true,
-        connectionLimit: Math.max(1, Number(process.env.DB_POOL_LIMIT || 3)),
-        queueLimit: 0,
-        dateStrings: true,
-        timezone: 'Z',
-        charset: 'utf8mb4',
-        ...(env.dbSsl ? { ssl: { rejectUnauthorized: false } } : {}),
-      });
-    }
-    return mysqlPool;
+function buildConnectionOptions() {
+  const hd = env.hyperdrive;
+  const host = hd?.host || env.dbHost;
+  const port = Number(hd?.port || env.dbPort || 3306);
+  const database = hd?.database || env.dbDatabase;
+  const user = hd?.user || env.dbUsername;
+  const password = hd?.password !== undefined ? hd.password : env.dbPassword;
+
+  if (!host || !database || !user) {
+    throw new Error(
+      'Remote MySQL configuration missing (DB_HOST, DB_DATABASE, DB_USERNAME, DB_PASSWORD or HYPERDRIVE binding).'
+    );
   }
 
-  if (!sqliteInstance) {
-    const dir = path.dirname(env.sqlitePath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-    sqliteInstance = new DatabaseSync(env.sqlitePath);
-    sqliteInstance.exec('PRAGMA journal_mode = WAL;');
-    sqliteInstance.exec('PRAGMA foreign_keys = ON;');
-    sqliteInstance.exec('PRAGMA synchronous = NORMAL;');
+  return {
+    host,
+    port,
+    database,
+    user,
+    password,
+    dateStrings: true,
+    timezone: 'Z',
+    charset: 'utf8mb4',
+    disableEval: true,
+    ...(env.dbSsl && !hd ? { ssl: { rejectUnauthorized: false } } : {}),
+  };
+}
+
+function getFallbackPool() {
+  if (!fallbackPool) {
+    fallbackPool = mysql.createPool({
+      ...buildConnectionOptions(),
+      waitForConnections: true,
+      connectionLimit: env.dbPoolLimit,
+      queueLimit: 0,
+    });
   }
-  return sqliteInstance;
+  return fallbackPool;
+}
+
+async function getActiveExecutor() {
+  const txConn = txStorage.getStore();
+  if (txConn) return txConn;
+
+  const reqCtx = requestDbStorage.getStore();
+  if (reqCtx) {
+    if (!reqCtx.connPromise) {
+      reqCtx.connPromise = mysql.createConnection(buildConnectionOptions());
+    }
+    return reqCtx.connPromise;
+  }
+
+  return getFallbackPool();
+}
+
+export async function runWithRequestDb(cfEnv, fn) {
+  return runWithRuntimeEnv(cfEnv, async () => {
+    const reqCtx = { connPromise: null, txDepth: 0 };
+    try {
+      return await requestDbStorage.run(reqCtx, fn);
+    } finally {
+      if (reqCtx.connPromise) {
+        try {
+          const conn = await reqCtx.connPromise;
+          await conn.end();
+        } catch {
+          // ignore teardown errors
+        }
+      }
+    }
+  });
 }
 
 export async function verifyConnection() {
-  if (isMySql()) {
-    const pool = getDb();
-    await pool.query('SELECT 1 AS ok');
-    return true;
-  }
-  getDb();
+  const executor = await getActiveExecutor();
+  await executor.query('SELECT 1 AS ok');
   return true;
 }
 
 export async function closeDb() {
   tableColumnsCache.clear();
-  if (mysqlPool) {
-    const pool = mysqlPool;
-    mysqlPool = null;
+  if (fallbackPool) {
+    const pool = fallbackPool;
+    fallbackPool = null;
     try {
       await pool.end();
     } catch {
       // ignore teardown errors
     }
-  }
-  if (sqliteInstance) {
-    sqliteInstance.close();
-    sqliteInstance = null;
   }
 }
 
@@ -109,83 +136,72 @@ function normalizeParams(params = []) {
 
 export async function queryAll(sql, params = []) {
   const safeParams = normalizeParams(params);
-  if (isMySql()) {
-    const conn = txStorage.getStore() || getDb();
-    const [rows] = await conn.query(sql, safeParams);
-    return Array.isArray(rows) ? rows : [];
-  }
-  return getDb().prepare(sql).all(...safeParams);
+  const executor = await getActiveExecutor();
+  const [rows] = await executor.query(sql, safeParams);
+  return Array.isArray(rows) ? rows : [];
 }
 
 export async function queryOne(sql, params = []) {
   const safeParams = normalizeParams(params);
-  if (isMySql()) {
-    const conn = txStorage.getStore() || getDb();
-    const [rows] = await conn.query(sql, safeParams);
-    return Array.isArray(rows) && rows.length > 0 ? rows[0] : undefined;
-  }
-  return getDb().prepare(sql).get(...safeParams);
+  const executor = await getActiveExecutor();
+  const [rows] = await executor.query(sql, safeParams);
+  return Array.isArray(rows) && rows.length > 0 ? rows[0] : undefined;
 }
 
 export async function execute(sql, params = []) {
   const safeParams = normalizeParams(params);
-  if (isMySql()) {
-    const conn = txStorage.getStore() || getDb();
-    const [result] = await conn.query(sql, safeParams);
-    const id = Number(result?.insertId || 0);
-    const changes = Number(result?.affectedRows || 0);
-    return { lastInsertRowid: id, insertId: id, changes };
-  }
-  const result = getDb().prepare(sql).run(...safeParams);
-  const id = Number(result?.lastInsertRowid || 0);
-  const changes = Number(result?.changes || 0);
+  const executor = await getActiveExecutor();
+  const [result] = await executor.query(sql, safeParams);
+  const id = Number(result?.insertId || 0);
+  const changes = Number(result?.affectedRows || 0);
   return { lastInsertRowid: id, insertId: id, changes };
 }
 
 export async function runInTransaction(fn) {
-  if (isMySql()) {
-    const existingConn = txStorage.getStore();
-    if (existingConn) {
-      return fn();
-    }
-    const pool = getDb();
-    const conn = await pool.getConnection();
+  const reqCtx = requestDbStorage.getStore();
+  if (reqCtx) {
+    const conn = await getActiveExecutor();
+    const isOuter = reqCtx.txDepth === 0;
+    if (isOuter) await conn.beginTransaction();
+    reqCtx.txDepth += 1;
     try {
-      await conn.beginTransaction();
       const result = await txStorage.run(conn, () => fn());
-      await conn.commit();
+      if (isOuter) await conn.commit();
       return result;
     } catch (err) {
-      try {
-        await conn.rollback();
-      } catch {
-        // ignore rollback failure
+      if (isOuter) {
+        try {
+          await conn.rollback();
+        } catch {
+          // ignore rollback error
+        }
       }
       throw err;
     } finally {
-      conn.release();
+      reqCtx.txDepth -= 1;
     }
   }
 
-  const db = getDb();
-  const isOuter = sqliteTxDepth === 0;
-  if (isOuter) db.exec('BEGIN');
-  sqliteTxDepth += 1;
+  const existingConn = txStorage.getStore();
+  if (existingConn) {
+    return fn();
+  }
+  const pool = getFallbackPool();
+  const conn = await pool.getConnection();
   try {
-    const result = await fn();
-    if (isOuter) db.exec('COMMIT');
+    await conn.beginTransaction();
+    const result = await txStorage.run(conn, () => fn());
+    await conn.commit();
     return result;
   } catch (err) {
-    if (isOuter) {
-      try {
-        db.exec('ROLLBACK');
-      } catch {
-        // ignore
-      }
+    try {
+      await conn.rollback();
+    } catch {
+      // ignore rollback error
     }
     throw err;
   } finally {
-    sqliteTxDepth -= 1;
+    conn.release();
   }
 }
 
@@ -195,16 +211,11 @@ export async function getTableColumns(tableName) {
     return tableColumnsCache.get(safeName);
   }
   let cols;
-  if (isMySql()) {
-    try {
-      const rows = await queryAll(`SHOW COLUMNS FROM \`${safeName}\``);
-      cols = new Set(rows.map((r) => r.Field));
-    } catch {
-      cols = new Set();
-    }
-  } else {
-    const rows = await queryAll(`PRAGMA table_info(${safeName})`);
-    cols = new Set(rows.map((r) => r.name));
+  try {
+    const rows = await queryAll(`SHOW COLUMNS FROM \`${safeName}\``);
+    cols = new Set(rows.map((r) => r.Field));
+  } catch {
+    cols = new Set();
   }
   tableColumnsCache.set(safeName, cols);
   return cols;
@@ -258,7 +269,8 @@ export async function paginateQuery({
     };
   }
 
-  const basePath = `${req.protocol}://${req.get('host')}${req.path}`;
+  const proto = String(req.headers['x-forwarded-proto'] || req.protocol || 'https').split(',')[0].trim();
+  const basePath = `${proto}://${req.get('host')}${req.path}`;
   const buildPageUrl = (p) => `${basePath}?page=${p}`;
   const links = [];
   links.push({ url: safePage > 1 ? buildPageUrl(safePage - 1) : null, label: '&laquo; Previous', active: false });

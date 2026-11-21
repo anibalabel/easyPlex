@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { env } from '../config/env.js';
-import { queryOne } from '../db/sqlite.js';
+import { queryOne } from '../db/mysql.js';
 import { verifyAuthToken } from '../services/crypto.js';
 import { extractBearerOrCookieToken } from './auth.js';
 

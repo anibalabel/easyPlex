@@ -1,4 +1,4 @@
-import { execute, nowIso, queryOne, runInTransaction } from '../db/sqlite.js';
+import { execute, nowIso, queryOne, runInTransaction } from '../db/mysql.js';
 
 export function calculatePlanExpiry(plan, startDate = new Date()) {
   const d = new Date(startDate.getTime());

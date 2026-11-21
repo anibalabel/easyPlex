@@ -70,7 +70,7 @@ export default function InstallerPage() {
             <img src="/favicon.png" alt="EasyPlex" className="h-10 w-10 rounded-2xl" />
             <div>
               <h1 className="text-lg font-bold">EasyPlex 2.4 Installation Wizard</h1>
-              <p className="text-xs text-slate-400">SQLite Edition • Local Stack Ready</p>
+              <p className="text-xs text-slate-400">Cloudflare Pages • Remote MySQL Edition</p>
             </div>
           </div>
 
@@ -98,7 +98,7 @@ export default function InstallerPage() {
               <div className="rounded-2xl border border-indigo-500/25 bg-indigo-500/10 p-5">
                 <h2 className="text-base font-semibold text-white mb-1">Welcome to EasyPlex 2.4 WebPanel</h2>
                 <p className="text-sm text-slate-300">
-                  This guided wizard verifies runtime requirements, checks local SQLite &amp; file storage permissions, and lets you customize app branding, TMDB API key, and administrator credentials.
+                  This guided wizard verifies Cloudflare Pages runtime requirements, checks your remote MySQL connection, and lets you customize app branding, TMDB API key, and administrator credentials.
                 </p>
               </div>
               {status && (
@@ -274,15 +274,6 @@ export default function InstallerPage() {
                   />
                 </div>
               </div>
-
-              <label className="flex items-center gap-2 text-xs text-slate-300 pt-1">
-                <input
-                  type="checkbox"
-                  checked={form.seed_demo}
-                  onChange={(e) => setForm({ ...form, seed_demo: e.target.checked })}
-                />
-                Ensure sample genres, plans, servers, and demo catalog entries are populated
-              </label>
 
               <div className="flex items-center justify-between pt-4">
                 <button type="button" onClick={() => setStep(2)} className="inline-flex items-center gap-1 text-xs text-slate-400 hover:text-white">
