@@ -189,7 +189,7 @@ export default function InstallerPage() {
                   required
                   value={form.host}
                   onChange={(e) => setForm({ ...form, host: e.target.value })}
-                  placeholder="mysql.us.cloudlogin.co"
+                  placeholder="localhost"
                   className="w-full rounded-xl border border-slate-700 bg-slate-800 px-3 py-2 text-sm font-mono"
                 />
               </div>
@@ -210,7 +210,7 @@ export default function InstallerPage() {
                   required
                   value={form.database}
                   onChange={(e) => setForm({ ...form, database: e.target.value })}
-                  placeholder="plusmovie_st"
+                  placeholder="namedb"
                   className="w-full rounded-xl border border-slate-700 bg-slate-800 px-3 py-2 text-sm font-mono"
                 />
               </div>
@@ -221,7 +221,7 @@ export default function InstallerPage() {
                   required
                   value={form.username}
                   onChange={(e) => setForm({ ...form, username: e.target.value })}
-                  placeholder="plusmovie_st"
+                  placeholder="userdb"
                   className="w-full rounded-xl border border-slate-700 bg-slate-800 px-3 py-2 text-sm font-mono"
                 />
               </div>
