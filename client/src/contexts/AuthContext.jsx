@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import api, { getStoredToken, setStoredToken } from '../lib/api';
 
 const AuthContext = createContext({
@@ -105,20 +105,23 @@ export function AuthProvider({ children }) {
     [user, hasPermission]
   );
 
+  const value = useMemo(
+    () => ({
+      user,
+      loading,
+      isAuthenticated: Boolean(user),
+      login,
+      register,
+      logout,
+      refreshUser,
+      hasPermission,
+      hasAnyPermission,
+    }),
+    [user, loading, login, register, logout, refreshUser, hasPermission, hasAnyPermission]
+  );
+
   return (
-    <AuthContext.Provider
-      value={{
-        user,
-        loading,
-        isAuthenticated: Boolean(user),
-        login,
-        register,
-        logout,
-        refreshUser,
-        hasPermission,
-        hasAnyPermission,
-      }}
-    >
+    <AuthContext.Provider value={value}>
       {children}
     </AuthContext.Provider>
   );

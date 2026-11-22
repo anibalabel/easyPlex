@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useState } from 'react';
+import React, { createContext, useCallback, useContext, useMemo, useState } from 'react';
 import { CheckCircle2, AlertCircle, Info, X } from 'lucide-react';
 
 const ToastContext = createContext({
@@ -15,20 +15,25 @@ export function ToastProvider({ children }) {
   const push = useCallback(
     (type, message) => {
       const id = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-      setItems((prev) => [...prev, { id, type, message }]);
+      setItems((prev) => [...prev.slice(-4), { id, type, message }]);
       setTimeout(() => dismiss(id), 4000);
     },
     [dismiss]
   );
 
-  const toast = {
-    success: (msg) => push('success', msg),
-    error: (msg) => push('error', msg),
-    info: (msg) => push('info', msg),
-  };
+  const toast = useMemo(
+    () => ({
+      success: (msg) => push('success', msg),
+      error: (msg) => push('error', msg),
+      info: (msg) => push('info', msg),
+    }),
+    [push]
+  );
+
+  const value = useMemo(() => ({ toast }), [toast]);
 
   return (
-    <ToastContext.Provider value={{ toast }}>
+    <ToastContext.Provider value={value}>
       {children}
       <div className="fixed bottom-4 right-4 z-[9999] flex flex-col gap-2 max-w-sm w-full pointer-events-none">
         {items.map((item) => (

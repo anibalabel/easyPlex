@@ -262,8 +262,13 @@ export function LocaleProvider({ children }) {
     };
   }, [locale, lookup]);
 
+  const value = useMemo(
+    () => ({ locale, setLocale, t, supportedLocales: LOCALE_OPTIONS }),
+    [locale, setLocale, t]
+  );
+
   return (
-    <LocaleContext.Provider value={{ locale, setLocale, t, supportedLocales: LOCALE_OPTIONS }}>
+    <LocaleContext.Provider value={value}>
       {children}
     </LocaleContext.Provider>
   );
