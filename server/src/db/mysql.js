@@ -374,6 +374,7 @@ export async function paginateQuery({
   page = 1,
   perPage = 12,
   mapRow = null,
+  mapRows = null,
   req = null,
 }) {
   const safePage = Math.max(1, Number(page) || 1);
@@ -389,7 +390,11 @@ export async function paginateQuery({
     [...params, safePerPage, offset]
   );
 
-  const data = mapRow ? await Promise.all(rows.map(mapRow)) : rows;
+  const data = mapRows
+    ? await mapRows(rows)
+    : mapRow
+    ? await Promise.all(rows.map(mapRow))
+    : rows;
   const lastPage = Math.max(1, Math.ceil(total / safePerPage));
 
   if (!req) {

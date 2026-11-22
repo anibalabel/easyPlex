@@ -6,19 +6,18 @@ import {
   Trash2,
   Tv,
   Sparkles,
-  Star,
   DownloadCloud,
   Layers,
   Power,
-  Crown,
 } from 'lucide-react';
-import api, { getErrorMessage, resolveMediaImage } from '../../lib/api';
+import api, { getErrorMessage } from '../../lib/api';
 import { useToast } from '../../contexts/ToastContext';
 import Modal from '../../components/shared/Modal';
 import Pagination from '../../components/shared/Pagination';
 import ImageInput from '../../components/shared/ImageInput';
 import MediaLinksEditor from '../../components/shared/MediaLinksEditor';
 import TmdbImportModal from '../../components/shared/TmdbImportModal';
+import { CatalogMediaCell, TmdbInfoCell } from '../../components/shared/TmdbMediaCells';
 
 const emptyItem = () => ({
   name: '',
@@ -358,7 +357,7 @@ export default function EpisodicCatalogPage({ kind = 'serie' }) {
               setPage(1);
               setQ(e.target.value);
             }}
-            placeholder={`Search ${label.toLowerCase()}...`}
+            placeholder={`Search ${label.toLowerCase()} by title, original name, TMDB / IMDb ID...`}
             className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 pl-9 pr-3 py-2 text-sm"
           />
         </div>
@@ -393,6 +392,7 @@ export default function EpisodicCatalogPage({ kind = 'serie' }) {
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/60 text-xs uppercase text-slate-500">
               <tr>
                 <th className="px-4 py-3">{singular}</th>
+                <th className="px-4 py-3">TMDB</th>
                 <th className="px-4 py-3">Seasons</th>
                 <th className="px-4 py-3">Views</th>
                 <th className="px-4 py-3">Status</th>
@@ -402,7 +402,7 @@ export default function EpisodicCatalogPage({ kind = 'serie' }) {
             <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
               {(data.data || []).length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="px-4 py-10 text-center text-slate-500 text-xs">
+                  <td colSpan={6} className="px-4 py-10 text-center text-slate-500 text-xs">
                     No {label.toLowerCase()} found.
                   </td>
                 </tr>
@@ -410,27 +410,24 @@ export default function EpisodicCatalogPage({ kind = 'serie' }) {
                 data.data.map((row) => (
                   <tr key={row.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
                     <td className="px-4 py-3">
-                      <div className="flex items-center gap-3">
-                        {row.poster_path ? (
-                          <img src={resolveMediaImage(row.poster_path)} alt={row.name} className="h-14 w-10 rounded-lg object-cover bg-slate-800" />
-                        ) : (
-                          <div className="h-14 w-10 rounded-lg bg-slate-200 dark:bg-slate-800 flex items-center justify-center">
-                            <Icon className="h-4 w-4 text-slate-400" />
-                          </div>
-                        )}
-                        <div>
-                          <div className="flex items-center gap-1.5">
-                            <p className="font-semibold">{row.name}</p>
-                            {Number(row.premuim) === 1 && <Crown className="h-3.5 w-3.5 text-amber-500" />}
-                          </div>
-                          <p className="text-xs text-slate-500 flex items-center gap-2 mt-0.5">
-                            <span>{row.first_air_date || 'N/A'}</span>
-                            <span className="inline-flex items-center gap-0.5 text-amber-500">
-                              <Star className="h-3 w-3 fill-current" /> {Number(row.vote_average || 0).toFixed(1)}
-                            </span>
-                          </p>
-                        </div>
-                      </div>
+                      <CatalogMediaCell
+                        title={row.name}
+                        originalName={row.original_name}
+                        posterPath={row.poster_path}
+                        FallbackIcon={Icon}
+                        isPremium={row.premuim}
+                        date={row.first_air_date}
+                        voteAverage={row.vote_average}
+                        overview={row.overview}
+                      />
+                    </td>
+                    <td className="px-4 py-3">
+                      <TmdbInfoCell
+                        mediaType="tv"
+                        tmdbId={row.tmdb_id}
+                        imdbId={row.imdb_external_id}
+                        voteCount={row.vote_count}
+                      />
                     </td>
                     <td className="px-4 py-3">
                       <button

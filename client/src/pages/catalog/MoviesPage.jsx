@@ -5,21 +5,20 @@ import {
   Pencil,
   Trash2,
   Film,
-  Star,
   DownloadCloud,
   RefreshCw,
   Captions,
   Play,
   Power,
-  Crown,
 } from 'lucide-react';
-import api, { getErrorMessage, resolveMediaImage } from '../../lib/api';
+import api, { getErrorMessage } from '../../lib/api';
 import { useToast } from '../../contexts/ToastContext';
 import Modal from '../../components/shared/Modal';
 import Pagination from '../../components/shared/Pagination';
 import ImageInput from '../../components/shared/ImageInput';
 import MediaLinksEditor from '../../components/shared/MediaLinksEditor';
 import TmdbImportModal from '../../components/shared/TmdbImportModal';
+import { CatalogMediaCell, TmdbInfoCell } from '../../components/shared/TmdbMediaCells';
 
 const emptyMovie = () => ({
   title: '',
@@ -282,7 +281,7 @@ export default function MoviesPage() {
               setPage(1);
               setQ(e.target.value);
             }}
-            placeholder="Search movies by title, TMDB ID..."
+            placeholder="Search movies by title, original name, TMDB / IMDb ID..."
             className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 pl-9 pr-3 py-2 text-sm"
           />
         </div>
@@ -319,6 +318,7 @@ export default function MoviesPage() {
             <thead className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/60 text-xs uppercase text-slate-500">
               <tr>
                 <th className="px-4 py-3">Movie</th>
+                <th className="px-4 py-3">TMDB</th>
                 <th className="px-4 py-3">Genres</th>
                 <th className="px-4 py-3">Streams</th>
                 <th className="px-4 py-3">Views</th>
@@ -329,7 +329,7 @@ export default function MoviesPage() {
             <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
               {(data.data || []).length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-4 py-10 text-center text-slate-500 text-xs">
+                  <td colSpan={7} className="px-4 py-10 text-center text-slate-500 text-xs">
                     No movies match your filters. Click &quot;Add Movie&quot; or &quot;Import from TMDB&quot;.
                   </td>
                 </tr>
@@ -337,28 +337,25 @@ export default function MoviesPage() {
                 data.data.map((m) => (
                   <tr key={m.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
                     <td className="px-4 py-3">
-                      <div className="flex items-center gap-3">
-                        {m.poster_path ? (
-                          <img src={resolveMediaImage(m.poster_path)} alt={m.title} className="h-14 w-10 rounded-lg object-cover bg-slate-800 shrink-0" />
-                        ) : (
-                          <div className="h-14 w-10 rounded-lg bg-slate-200 dark:bg-slate-800 flex items-center justify-center shrink-0">
-                            <Film className="h-4 w-4 text-slate-400" />
-                          </div>
-                        )}
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-1.5">
-                            <p className="font-semibold truncate max-w-[240px]">{m.title}</p>
-                            {Number(m.premuim) === 1 && <Crown className="h-3.5 w-3.5 text-amber-500 shrink-0" />}
-                          </div>
-                          <p className="text-xs text-slate-500 flex items-center gap-2 mt-0.5">
-                            <span>{m.release_date || 'N/A'}</span>
-                            <span className="inline-flex items-center gap-0.5 text-amber-500">
-                              <Star className="h-3 w-3 fill-current" /> {Number(m.vote_average || 0).toFixed(1)}
-                            </span>
-                            {m.tmdb_id && <span className="font-mono text-[10px]">TMDB #{m.tmdb_id}</span>}
-                          </p>
-                        </div>
-                      </div>
+                      <CatalogMediaCell
+                        title={m.title}
+                        originalName={m.original_name}
+                        posterPath={m.poster_path}
+                        FallbackIcon={Film}
+                        isPremium={m.premuim}
+                        date={m.release_date}
+                        voteAverage={m.vote_average}
+                        runtime={m.runtime}
+                        overview={m.overview}
+                      />
+                    </td>
+                    <td className="px-4 py-3">
+                      <TmdbInfoCell
+                        mediaType="movie"
+                        tmdbId={m.tmdb_id}
+                        imdbId={m.imdb_external_id}
+                        voteCount={m.vote_count}
+                      />
                     </td>
                     <td className="px-4 py-3 text-xs">
                       <div className="flex flex-wrap gap-1 max-w-[200px]">

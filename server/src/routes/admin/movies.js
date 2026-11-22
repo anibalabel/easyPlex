@@ -25,6 +25,7 @@ import {
   toBoolInt,
   syncParentRelations,
   syncLinks,
+  hydrateMediaListSummary,
   hydrateMediaRecord,
   fetchTmdbMetadata,
   OPENSUBTITLES_LANGUAGES,
@@ -102,7 +103,7 @@ router.get('/admin/movies/dataweb', requirePermission('movies.view'), async (req
     orderBySql: 'id DESC',
     page,
     perPage,
-    mapRow: (row) => hydrateMediaRecord('movie', row),
+    mapRows: (rows) => hydrateMediaListSummary('movie', rows),
   });
 
   return res.json(paged);

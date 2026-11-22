@@ -23,6 +23,7 @@ import {
   toBoolInt,
   syncParentRelations,
   syncLinks,
+  hydrateMediaListSummary,
   hydrateMediaRecord,
   fetchTmdbMetadata,
   normalizeDateValue,
@@ -323,8 +324,16 @@ function registerEpisodicMedia(kind, { plural, singular, perm, uploadMiddleware,
     const conditions = [];
     const params = [];
     if (q) {
-      conditions.push(`(name LIKE ? OR original_name LIKE ? OR ${castAsText('tmdb_id')} LIKE ?)`);
-      params.push(`%${q}%`, `%${q}%`, `%${q}%`);
+      const hasImdbCol = await hasColumn(cfg.table, 'imdb_external_id');
+      if (hasImdbCol) {
+        conditions.push(
+          `(name LIKE ? OR original_name LIKE ? OR ${castAsText('tmdb_id')} LIKE ? OR imdb_external_id LIKE ?)`
+        );
+        params.push(`%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`);
+      } else {
+        conditions.push(`(name LIKE ? OR original_name LIKE ? OR ${castAsText('tmdb_id')} LIKE ?)`);
+        params.push(`%${q}%`, `%${q}%`, `%${q}%`);
+      }
     }
     if (status === 'active') conditions.push('active = 1');
     if (status === 'inactive') conditions.push('active = 0');
@@ -339,7 +348,7 @@ function registerEpisodicMedia(kind, { plural, singular, perm, uploadMiddleware,
       orderBySql: 'id DESC',
       page,
       perPage,
-      mapRow: (row) => hydrateMediaRecord(kind, row),
+      mapRows: (rows) => hydrateMediaListSummary(kind, rows),
     });
     return res.json(paged);
   });

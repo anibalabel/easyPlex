@@ -524,6 +524,112 @@ export async function syncLinks(cfg, ownerId, links, kind, replaceMissing = true
   }
 }
 
+async function queryAllInChunks(buildSql, ids, chunkSize = 500) {
+  const uniqueIds = [
+    ...new Set(ids.map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0)),
+  ];
+  if (!uniqueIds.length) return [];
+  const out = [];
+  for (let i = 0; i < uniqueIds.length; i += chunkSize) {
+    const chunk = uniqueIds.slice(i, i + chunkSize);
+    const ph = chunk.map(() => '?').join(',');
+    const rows = await queryAll(buildSql(ph), chunk);
+    out.push(...rows);
+  }
+  return out;
+}
+
+function groupRowsByKey(rows, keyName) {
+  const map = new Map();
+  for (const r of rows) {
+    const key = Number(r[keyName]);
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push(r);
+  }
+  return map;
+}
+
+function formatGenreFields(mediaType, genres) {
+  const normalizedGenres = genres.map((g) => ({
+    id: g.pivot_id || g.id,
+    genre_id: g.genre_id || g.id,
+    name: g.name,
+    logo_path: g.logo_path || null,
+  }));
+  const genreslist = normalizedGenres.map((g) => g.name).filter(Boolean);
+  const genresname = mediaType === 'movie' ? genreslist[0] || null : genreslist.join(', ');
+  return { genres: normalizedGenres, genreslist, genresname };
+}
+
+/**
+ * Lightweight batch hydration for admin catalog tables (avoids loading episodes/casts/links per row).
+ */
+export async function hydrateMediaListSummary(mediaType, rows = []) {
+  if (!Array.isArray(rows) || rows.length === 0) return [];
+  const cfg = MEDIA_SCHEMAS[mediaType];
+  const ids = rows.map((r) => Number(r.id));
+
+  if (mediaType === 'movie') {
+    const [genreRows, videoRows] = await Promise.all([
+      queryAllInChunks(
+        (ph) =>
+          `SELECT mg.${cfg.fkCol} AS owner_id, g.*, mg.id AS pivot_id, mg.genre_id FROM ${cfg.genreTable} mg JOIN genres g ON g.id = mg.genre_id WHERE mg.${cfg.fkCol} IN (${ph}) ORDER BY mg.id ASC`,
+        ids
+      ),
+      queryAllInChunks(
+        (ph) =>
+          `SELECT * FROM ${cfg.videoTable} WHERE ${cfg.videoFk} IN (${ph}) ORDER BY COALESCE(position, sort_order, id) ASC`,
+        ids
+      ),
+    ]);
+
+    const genresByOwner = groupRowsByKey(genreRows, 'owner_id');
+    const videosByOwner = groupRowsByKey(videoRows, cfg.videoFk);
+
+    return rows.map((row) => {
+      const id = Number(row.id);
+      const genreFields = formatGenreFields(mediaType, genresByOwner.get(id) || []);
+      return {
+        ...row,
+        ...genreFields,
+        videos: videosByOwner.get(id) || [],
+      };
+    });
+  }
+
+  const seasonRows = await queryAllInChunks(
+    (ph) =>
+      `SELECT * FROM ${cfg.seasonTable} WHERE ${cfg.seasonFk} IN (${ph}) ORDER BY season_number ASC, id ASC`,
+    ids
+  );
+  const seasonIds = seasonRows.map((s) => Number(s.id));
+  const epCountRows = await queryAllInChunks(
+    (ph) =>
+      `SELECT ${cfg.episodeFk} AS season_id, COUNT(*) AS c FROM ${cfg.episodeTable} WHERE ${cfg.episodeFk} IN (${ph}) GROUP BY ${cfg.episodeFk}`,
+    seasonIds
+  );
+
+  const epCountMap = new Map(epCountRows.map((cr) => [Number(cr.season_id), Number(cr.c || 0)]));
+  const seasonsByParent = new Map();
+  for (const season of seasonRows) {
+    const parentId = Number(season[cfg.seasonFk]);
+    if (!seasonsByParent.has(parentId)) seasonsByParent.set(parentId, []);
+    seasonsByParent.get(parentId).push({
+      ...season,
+      episodes_count: epCountMap.get(Number(season.id)) || 0,
+    });
+  }
+
+  return rows.map((row) => {
+    const seasons = seasonsByParent.get(Number(row.id)) || [];
+    return {
+      ...row,
+      seasons,
+      seasons_count: seasons.length,
+    };
+  });
+}
+
 export async function hydrateMediaRecord(mediaType, row, { includeEpisodes = true } = {}) {
   if (!row) return null;
   const cfg = MEDIA_SCHEMAS[mediaType];
@@ -548,17 +654,7 @@ export async function hydrateMediaRecord(mediaType, row, { includeEpisodes = tru
     queryAll(`SELECT * FROM ${cfg.certTable} WHERE ${cfg.fkCol} = ? ORDER BY id ASC`, [row.id]),
   ]);
 
-  const normalizedGenres = genres.map((g) => ({
-    id: g.pivot_id || g.id,
-    genre_id: g.genre_id || g.id,
-    name: g.name,
-    logo_path: g.logo_path || null,
-  }));
-  const genreslist = normalizedGenres.map((g) => g.name).filter(Boolean);
-  const genresname =
-    mediaType === 'movie'
-      ? genreslist[0] || null
-      : genreslist.join(', ');
+  const { genres: normalizedGenres, genreslist, genresname } = formatGenreFields(mediaType, genres);
 
   const hydrated = {
     ...row,
@@ -608,38 +704,75 @@ export async function hydrateMediaRecord(mediaType, row, { includeEpisodes = tru
     `SELECT * FROM ${cfg.seasonTable} WHERE ${cfg.seasonFk} = ? ORDER BY season_number ASC, id ASC`,
     [row.id]
   );
+  const seasonIds = rawSeasons.map((s) => Number(s.id)).filter(Boolean);
 
-  const seasons = await Promise.all(
-    rawSeasons.map(async (season) => {
-      const epCountRow = await queryOne(
-        `SELECT COUNT(*) AS c FROM ${cfg.episodeTable} WHERE ${cfg.episodeFk} = ?`,
-        [season.id]
-      );
-      const episodes_count = Number(epCountRow?.c || 0);
-      if (!includeEpisodes) return { ...season, episodes_count };
-      const rawEpisodes = await queryAll(
-        `SELECT * FROM ${cfg.episodeTable} WHERE ${cfg.episodeFk} = ? ORDER BY episode_number ASC, id ASC`,
-        [season.id]
-      );
-      const episodes = await Promise.all(
-        rawEpisodes.map(async (ep) => {
-          const [videos, downloads, substitles] = await Promise.all([
-            queryAll(
-              `SELECT * FROM ${cfg.videoTable} WHERE ${cfg.videoFk} = ? ORDER BY COALESCE(position, sort_order, id) ASC`,
-              [ep.id]
-            ),
-            queryAll(
-              `SELECT * FROM ${cfg.downloadTable} WHERE ${cfg.downloadFk} = ? ORDER BY COALESCE(sort_order, id) ASC`,
-              [ep.id]
-            ),
-            queryAll(`SELECT * FROM ${cfg.subtitleTable} WHERE ${cfg.subtitleFk} = ? ORDER BY id ASC`, [ep.id]),
-          ]);
-          return { ...ep, videos, downloads, substitles };
-        })
-      );
-      return { ...season, episodes_count, episodes };
-    })
+  if (!includeEpisodes) {
+    const countRows = await queryAllInChunks(
+      (ph) =>
+        `SELECT ${cfg.episodeFk} AS season_id, COUNT(*) AS c FROM ${cfg.episodeTable} WHERE ${cfg.episodeFk} IN (${ph}) GROUP BY ${cfg.episodeFk}`,
+      seasonIds
+    );
+    const epCountMap = new Map(countRows.map((cr) => [Number(cr.season_id), Number(cr.c || 0)]));
+    const seasons = rawSeasons.map((season) => ({
+      ...season,
+      episodes_count: epCountMap.get(Number(season.id)) || 0,
+    }));
+    return {
+      ...hydrated,
+      seasons,
+      seasons_count: rawSeasons.length,
+    };
+  }
+
+  const rawEpisodes = await queryAllInChunks(
+    (ph) =>
+      `SELECT * FROM ${cfg.episodeTable} WHERE ${cfg.episodeFk} IN (${ph}) ORDER BY episode_number ASC, id ASC`,
+    seasonIds
   );
+  const episodeIds = rawEpisodes.map((ep) => Number(ep.id)).filter(Boolean);
+
+  const [allVideos, allDownloads, allSubtitles] = await Promise.all([
+    queryAllInChunks(
+      (ph) =>
+        `SELECT * FROM ${cfg.videoTable} WHERE ${cfg.videoFk} IN (${ph}) ORDER BY COALESCE(position, sort_order, id) ASC`,
+      episodeIds
+    ),
+    queryAllInChunks(
+      (ph) =>
+        `SELECT * FROM ${cfg.downloadTable} WHERE ${cfg.downloadFk} IN (${ph}) ORDER BY COALESCE(sort_order, id) ASC`,
+      episodeIds
+    ),
+    queryAllInChunks(
+      (ph) => `SELECT * FROM ${cfg.subtitleTable} WHERE ${cfg.subtitleFk} IN (${ph}) ORDER BY id ASC`,
+      episodeIds
+    ),
+  ]);
+
+  const videosByEp = groupRowsByKey(allVideos, cfg.videoFk);
+  const downloadsByEp = groupRowsByKey(allDownloads, cfg.downloadFk);
+  const subtitlesByEp = groupRowsByKey(allSubtitles, cfg.subtitleFk);
+
+  const episodesBySeason = new Map();
+  for (const ep of rawEpisodes) {
+    const seasonId = Number(ep[cfg.episodeFk]);
+    if (!episodesBySeason.has(seasonId)) episodesBySeason.set(seasonId, []);
+    const epId = Number(ep.id);
+    episodesBySeason.get(seasonId).push({
+      ...ep,
+      videos: videosByEp.get(epId) || [],
+      downloads: downloadsByEp.get(epId) || [],
+      substitles: subtitlesByEp.get(epId) || [],
+    });
+  }
+
+  const seasons = rawSeasons.map((season) => {
+    const episodes = episodesBySeason.get(Number(season.id)) || [];
+    return {
+      ...season,
+      episodes_count: episodes.length,
+      episodes,
+    };
+  });
 
   return {
     ...hydrated,
