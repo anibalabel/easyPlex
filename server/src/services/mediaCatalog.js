@@ -577,8 +577,7 @@ export async function hydrateMediaListSummary(mediaType, rows = []) {
         ids
       ),
       queryAllInChunks(
-        (ph) =>
-          `SELECT * FROM ${cfg.videoTable} WHERE ${cfg.videoFk} IN (${ph}) ORDER BY COALESCE(position, sort_order, id) ASC`,
+        (ph) => `SELECT id, ${cfg.videoFk} FROM ${cfg.videoTable} WHERE ${cfg.videoFk} IN (${ph})`,
         ids
       ),
     ]);
