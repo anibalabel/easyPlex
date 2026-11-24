@@ -6,3 +6,4 @@ dist-worker/
 .wrangler/
 .DS_Store
 .env.example
+.vscode
