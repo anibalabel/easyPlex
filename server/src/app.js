@@ -1,8 +1,17 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import express from 'express';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
 
-import { env, getCachedDbDefaults, setRuntimeDbDefaults } from './config/env.js';
+import {
+  env,
+  getCachedDbDefaults,
+  isWorkersRuntime,
+  runWithRuntimeEnv,
+  setRuntimeDbDefaults,
+} from './config/env.js';
+import { isBackendPath, isSpaPageRequest, isStaticAssetPath } from './config/spaRoutes.js';
 import { queryOne } from './db/mysql.js';
 import { attachAuthUser } from './middleware/auth.js';
 import {
@@ -32,9 +41,27 @@ import apiCatalogRoutes from './routes/api/catalog.js';
 import apiPlayerMonetizationRoutes from './routes/api/playerMonetization.js';
 import apiSystemRoutes from './routes/api/system.js';
 
-export function buildApp() {
+export function buildApp({ staticDir = null, useNodeEnv = false } = {}) {
   const app = express();
   app.set('trust proxy', 1);
+
+  const hasStaticDist = Boolean(staticDir && fs.existsSync(path.join(staticDir, 'index.html')));
+
+  if (useNodeEnv) {
+    app.use((_req, _res, next) =>
+      runWithRuntimeEnv(typeof process !== 'undefined' ? process.env : {}, next)
+    );
+  }
+
+  if (hasStaticDist) {
+    app.use(express.static(staticDir, { index: false }));
+    app.use((req, res, next) => {
+      if (isSpaPageRequest(req.method, req.path)) {
+        return res.sendFile(path.join(staticDir, 'index.html'));
+      }
+      return next();
+    });
+  }
 
   app.use(
     cors({
@@ -92,7 +119,7 @@ export function buildApp() {
       status: 'ok',
       app: env.appName,
       version: '2.4.21',
-      runtime: 'cloudflare-workers',
+      runtime: isWorkersRuntime ? 'cloudflare-workers' : 'node',
       db_connection: 'mysql',
     });
   });
@@ -120,6 +147,16 @@ export function buildApp() {
   app.use(adminEngagementRoutes);
   app.use(adminMonetizationRoutes);
   app.use(adminSettingsRoutes);
+
+  // SPA fallback for standard Node.js hosting (Cloudflare Workers uses env.ASSETS instead)
+  if (hasStaticDist) {
+    app.get('*', (req, res, next) => {
+      if (isBackendPath(req.path) || isStaticAssetPath(req.path)) {
+        return next();
+      }
+      return res.sendFile(path.join(staticDir, 'index.html'));
+    });
+  }
 
   // Global error handler
   app.use((err, _req, res, _next) => {

@@ -16,10 +16,11 @@ const cachedKvDbConfig = {
 };
 const CACHE_TTL_MS = 60_000;
 
+export const isWorkersRuntime =
+  typeof navigator !== 'undefined' && navigator.userAgent === 'Cloudflare-Workers';
+
 // Only attempt dotenv loading when running under plain local Node (skipped cleanly inside Cloudflare Workers)
 try {
-  const isWorkersRuntime =
-    typeof navigator !== 'undefined' && navigator.userAgent === 'Cloudflare-Workers';
   if (!isWorkersRuntime && typeof process !== 'undefined' && process.cwd) {
     const dirname = path.dirname(fileURLToPath(import.meta.url));
     const projectRoot = path.resolve(dirname, '..', '..', '..');
@@ -125,12 +126,17 @@ export const env = {
   },
   get appName() {
     const store = runtimeEnvStorage.getStore();
-    return String(store?.dbDefaults?.app_name || getRuntimeVar('APP_NAME', 'easyplex-mobile'));
+    return String(
+      store?.dbDefaults?.app_name ||
+        getCachedDbDefaults()?.app_name ||
+        getRuntimeVar('APP_NAME', 'easyplex-mobile')
+    );
   },
   get appUrl() {
     const store = runtimeEnvStorage.getStore();
     const raw =
       store?.dbDefaults?.url ||
+      getCachedDbDefaults()?.url ||
       getRuntimeVar('APP_URL') ||
       store?.requestOrigin ||
       getRuntimeVar('CF_PAGES_URL') ||
@@ -142,6 +148,7 @@ export const env = {
     return String(
       getRuntimeVar('JWT_SECRET') ||
         store?.dbDefaults?.jwt_secret ||
+        getCachedDbDefaults()?.jwt_secret ||
         'easyplex-default-secret'
     );
   },

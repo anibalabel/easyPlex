@@ -1,78 +1,12 @@
 import { httpServerHandler } from 'cloudflare:node';
 import { buildApp } from './app.js';
 import { getCachedKvDbConfig, setCachedKvDbConfig } from './config/env.js';
+import { isBackendPath, isSpaPageRequest, isStaticAssetPath } from './config/spaRoutes.js';
 import { runWithRequestDb } from './db/mysql.js';
 
 const app = buildApp();
 const server = app.listen(8787);
 const nodeHandler = httpServerHandler(server);
-
-const SPA_EXACT_ROUTES = new Set([
-  '/',
-  '/home',
-  '/login',
-  '/register',
-  '/email/verify',
-  '/installer',
-  '/admin',
-  '/admin/account',
-  '/admin/movies',
-  '/admin/series',
-  '/admin/animes',
-  '/admin/mangas',
-  '/admin/streaming',
-  '/admin/reels',
-  '/admin/featured',
-  '/admin/top10',
-  '/admin/upcoming',
-  '/admin/previews',
-  '/admin/requests',
-  '/admin/video-conversion',
-  '/admin/genres',
-  '/admin/categories',
-  '/admin/collections',
-  '/admin/networks',
-  '/admin/certifications',
-  '/admin/languages',
-  '/admin/casters',
-  '/admin/servers',
-  '/admin/headers',
-  '/admin/users',
-  '/admin/moderators',
-  '/admin/comments',
-  '/admin/reports',
-  '/admin/suggestions',
-  '/admin/plans',
-  '/admin/offline-payments',
-  '/admin/credits',
-  '/admin/ads',
-  '/admin/notifications',
-  '/admin/settings',
-  '/admin/api-explorer',
-]);
-
-function isSpaPageRequest(request, pathname) {
-  if (request.method !== 'GET' && request.method !== 'HEAD') return false;
-  if (SPA_EXACT_ROUTES.has(pathname)) return true;
-  if (pathname.startsWith('/password/reset') || pathname.startsWith('/embed/')) return true;
-  return false;
-}
-
-function isStaticAssetPath(pathname) {
-  if (pathname.startsWith('/assets/')) return true;
-  return /\.(js|css|map|png|jpe?g|gif|svg|ico|webp|woff2?|ttf|txt)$/i.test(pathname);
-}
-
-function isBackendPath(pathname) {
-  return (
-    pathname.startsWith('/api/') ||
-    pathname.startsWith('/admin/') ||
-    pathname.startsWith('/installer-api/') ||
-    pathname.startsWith('/auth/') ||
-    pathname.startsWith('/storage/') ||
-    pathname === '/health'
-  );
-}
 
 async function serveSpaIndex(request, env) {
   const url = new URL('/', request.url);
@@ -90,7 +24,7 @@ export default {
     const { pathname } = url;
 
     if (env.ASSETS) {
-      if (isSpaPageRequest(request, pathname)) {
+      if (isSpaPageRequest(request.method, pathname)) {
         return serveSpaIndex(request, env);
       }
       if (!isBackendPath(pathname) && isStaticAssetPath(pathname)) {

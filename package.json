@@ -3,8 +3,11 @@
   "version": "2.4.21",
   "private": true,
   "type": "module",
-  "description": "EasyPlex 2.4.21 Unified Full-Stack WebPanel & REST API for Cloudflare Pages + Remote MySQL",
+  "main": "app.cjs",
+  "description": "EasyPlex 2.4.21 Unified Full-Stack WebPanel & REST API for Cloudflare Workers or Node.js Hosting",
   "scripts": {
+    "start": "node app.cjs",
+    "build:client": "vite build",
     "build": "vite build && node scripts/build-worker.mjs",
     "dev": "npm run build && wrangler dev",
     "deploy": "npm run build && wrangler deploy"

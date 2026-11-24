@@ -4,6 +4,7 @@ import {
   clearCachedKvDbConfig,
   env,
   getActiveKvDbConfig,
+  isWorkersRuntime,
   setCachedKvDbConfig,
 } from '../config/env.js';
 import { SUPPORTED_LOCALES, LOCALE_MESSAGES } from '../config/locales.js';
@@ -251,7 +252,10 @@ router.get('/installer-api/status', async (_req, res) => {
     error_message: check.ok ? null : check.message,
     hint: check.ok ? null : check.hint,
     db_driver: `mysql (${env.dbHost || 'hyperdrive'}:${env.dbPort}/${env.dbDatabase})`,
-    node_version: 'Cloudflare Workers (nodejs_compat)',
+    node_version:
+      !isWorkersRuntime && typeof process !== 'undefined' && process.versions?.node
+        ? `Node.js ${process.versions.node}`
+        : 'Cloudflare Workers (nodejs_compat)',
   });
 });
 
@@ -308,8 +312,9 @@ router.post('/installer-api/save-connection', async (req, res) => {
     saved_to: 'env_required',
     ok: true,
     ...check,
-    message:
-      'Connection verified! Add CONFIG_KV binding for browser persistence, or save DB_* variables in Cloudflare Dashboard -> Settings -> Variables and Secrets.',
+    message: isWorkersRuntime
+      ? 'Connection verified! Add CONFIG_KV binding for browser persistence, or save DB_* variables in Cloudflare Dashboard -> Settings -> Variables and Secrets.'
+      : 'Connection verified! Save these DB_* variables in your .env file (or cPanel Node.js App environment variables) and restart the app.',
   });
 });
 
