@@ -1,6 +1,7 @@
 import { execute } from './mysql.js';
 
 let uploadedTableReady = false;
+let videoLibraryTableReady = false;
 let auxTablesReady = false;
 
 export async function ensureUploadedFilesTable() {
@@ -64,7 +65,38 @@ export async function ensureAuxMySqlTables() {
   `);
 
   await ensureUploadedFilesTable();
+  await ensureVideoLibraryTable();
   auxTablesReady = true;
+}
+
+export async function ensureVideoLibraryTable() {
+  if (videoLibraryTableReady) return;
+  await execute(`
+    CREATE TABLE IF NOT EXISTS video_library (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      code VARCHAR(64) NOT NULL UNIQUE,
+      title VARCHAR(255) NULL,
+      original_name VARCHAR(255) NOT NULL,
+      media_type VARCHAR(32) NOT NULL DEFAULT 'movie',
+      directory VARCHAR(64) NOT NULL DEFAULT 'movies/originals',
+      file_key VARCHAR(512) NOT NULL,
+      stream_url TEXT NOT NULL,
+      format VARCHAR(32) NOT NULL DEFAULT 'mp4',
+      quality VARCHAR(32) NOT NULL DEFAULT 'Original',
+      file_size BIGINT UNSIGNED NOT NULL DEFAULT 0,
+      storage VARCHAR(32) NOT NULL DEFAULT 'r2',
+      bucket VARCHAR(191) NULL,
+      movie_id BIGINT UNSIGNED NULL,
+      episode_id BIGINT UNSIGNED NULL,
+      created_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      KEY idx_video_library_movie (movie_id),
+      KEY idx_video_library_episode (episode_id),
+      KEY idx_video_library_storage (storage),
+      KEY idx_video_library_created (created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+  videoLibraryTableReady = true;
 }
 
 export async function initSchema() {

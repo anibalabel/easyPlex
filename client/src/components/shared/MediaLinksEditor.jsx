@@ -1,6 +1,22 @@
-import React, { useState } from 'react';
-import { Plus, Trash2, ArrowUp, ArrowDown, Play, Film, Download, Captions } from 'lucide-react';
+import React, { useRef, useState } from 'react';
+import {
+  Plus,
+  Trash2,
+  ArrowUp,
+  ArrowDown,
+  Play,
+  Film,
+  Download,
+  Captions,
+  Upload,
+  FolderOpen,
+  Loader2,
+  Cloud,
+} from 'lucide-react';
 import PlayerPreviewModal from './PlayerPreviewModal';
+import VideoLibraryModal from './VideoLibraryModal';
+import { useToast } from '../../contexts/ToastContext';
+import { formatBytes, uploadVideoDirect } from '../../lib/r2Upload';
 
 const emptyVideo = () => ({
   server: 'Default Server',
@@ -42,6 +58,8 @@ const emptySubtitle = () => ({
   status: 1,
 });
 
+const QUALITY_TAGS = ['Original', '4K', '1080p', '720p', '480p', '360p'];
+
 export default function MediaLinksEditor({
   videos = [],
   onChangeVideos,
@@ -52,9 +70,106 @@ export default function MediaLinksEditor({
   servers = [],
   showDownloads = true,
   showSubtitles = true,
+  mediaType = 'movie',
+  mediaId = null,
+  defaultTitle = '',
 }) {
   const [tab, setTab] = useState('videos');
   const [preview, setPreview] = useState(null);
+  const [libraryOpen, setLibraryOpen] = useState(false);
+  const [libraryTargetIdx, setLibraryTargetIdx] = useState(null);
+  const [uploadQuality, setUploadQuality] = useState('Original');
+  const [uploading, setUploading] = useState(false);
+  const [uploadPct, setUploadPct] = useState(0);
+  const [uploadName, setUploadName] = useState('');
+  const fileInputRef = useRef(null);
+  const { toast } = useToast();
+
+  const applySelectedVideo = (item) => {
+    const linkUrl = item?.stream_url || '';
+    if (!linkUrl) return;
+    const isHls = /\.m3u8(\?|$)/i.test(linkUrl) || item.format === 'hls' ? 1 : 0;
+    const srv = item.storage === 'r2' ? 'Cloudflare R2' : item.server || 'Local Server';
+    const qual = item.quality || 'Original';
+    const vname = item.title || item.original_name || defaultTitle || '';
+
+    if (tab === 'downloads') {
+      if (libraryTargetIdx !== null && downloads[libraryTargetIdx]) {
+        const next = [...downloads];
+        next[libraryTargetIdx] = {
+          ...next[libraryTargetIdx],
+          server: next[libraryTargetIdx].server || srv,
+          quality: qual,
+          link: linkUrl,
+          video_name: vname,
+        };
+        onChangeDownloads(next);
+      } else {
+        onChangeDownloads([
+          ...downloads,
+          { ...emptyDownload(), server: srv, quality: qual, link: linkUrl, video_name: vname },
+        ]);
+      }
+    } else {
+      if (libraryTargetIdx !== null && videos[libraryTargetIdx]) {
+        const next = [...videos];
+        next[libraryTargetIdx] = {
+          ...next[libraryTargetIdx],
+          server: next[libraryTargetIdx].server === 'Default Server' || !next[libraryTargetIdx].server ? srv : next[libraryTargetIdx].server,
+          quality: qual,
+          link: linkUrl,
+          hls: isHls,
+          video_name: vname,
+        };
+        onChangeVideos(next);
+      } else {
+        onChangeVideos([
+          ...videos,
+          { ...emptyVideo(), server: srv, quality: qual, link: linkUrl, hls: isHls, video_name: vname },
+        ]);
+      }
+    }
+    setLibraryTargetIdx(null);
+    toast.success('Video link attached cleanly');
+  };
+
+  const handleDirectFileUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    setUploadPct(1);
+    setUploadName(`${file.name} (${formatBytes(file.size)})`);
+    try {
+      const res = await uploadVideoDirect({
+        file,
+        type: mediaType || 'movie',
+        title: defaultTitle || file.name.replace(/\.[^.]+$/, ''),
+        quality: uploadQuality || 'Original',
+        movieId: mediaType === 'movie' ? mediaId : null,
+        episodeId: mediaType === 'episode' || mediaType === 'anime' ? mediaId : null,
+        autoAttach: false,
+        onProgress: (pct) => setUploadPct(pct),
+      });
+      const streamUrl = res?.stream_url || res?.video_path || '';
+      if (streamUrl) {
+        applySelectedVideo({
+          stream_url: streamUrl,
+          storage: res.storage || 'r2',
+          server: res.server || 'Cloudflare R2',
+          quality: res.quality || uploadQuality || 'Original',
+          title: res.video_name || defaultTitle || file.name,
+          format: res.hls ? 'hls' : 'mp4',
+        });
+      }
+    } catch (err) {
+      toast.error(err?.message || 'Video upload failed');
+    } finally {
+      setUploading(false);
+      setUploadPct(0);
+      setUploadName('');
+      e.target.value = '';
+    }
+  };
 
   const swapItem = (list, setter, idx, dir) => {
     const next = [...list];
@@ -112,19 +227,85 @@ export default function MediaLinksEditor({
           )}
         </div>
 
-        <button
-          type="button"
-          onClick={() => {
-            if (tab === 'videos') onChangeVideos([...videos, emptyVideo()]);
-            else if (tab === 'downloads') onChangeDownloads([...downloads, emptyDownload()]);
-            else onChangeSubtitles([...subtitles, emptySubtitle()]);
-          }}
-          className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 px-3 py-1.5 text-xs font-semibold text-white"
-        >
-          <Plus className="h-3.5 w-3.5" />
-          Add {tab === 'videos' ? 'Stream' : tab === 'downloads' ? 'Download' : 'Subtitle'}
-        </button>
+        <div className="flex flex-wrap items-center gap-1.5">
+          {(tab === 'videos' || tab === 'downloads') && (
+            <>
+              <select
+                value={uploadQuality}
+                onChange={(e) => setUploadQuality(e.target.value)}
+                disabled={uploading}
+                title="Optional quality label (file uploads directly as-is without transcoding)"
+                className="rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-2 py-1.5 text-xs font-semibold"
+              >
+                {QUALITY_TAGS.map((qTag) => (
+                  <option key={qTag} value={qTag}>{qTag}</option>
+                ))}
+              </select>
+
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="video/*,.mp4,.mkv,.webm,.mov,.m3u8"
+                onChange={handleDirectFileUpload}
+                className="hidden"
+              />
+
+              <button
+                type="button"
+                disabled={uploading}
+                onClick={() => fileInputRef.current?.click()}
+                className="inline-flex items-center gap-1 rounded-lg bg-orange-600 hover:bg-orange-500 disabled:opacity-50 px-3 py-1.5 text-xs font-semibold text-white"
+                title="Upload video directly to Cloudflare R2 without conversion"
+              >
+                {uploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Cloud className="h-3.5 w-3.5" />}
+                {uploading ? `${uploadPct}%` : 'Upload Video (R2)'}
+              </button>
+
+              <button
+                type="button"
+                disabled={uploading}
+                onClick={() => {
+                  setLibraryTargetIdx(null);
+                  setLibraryOpen(true);
+                }}
+                className="inline-flex items-center gap-1 rounded-lg border border-indigo-500/40 bg-indigo-500/10 hover:bg-indigo-500/20 px-3 py-1.5 text-xs font-semibold text-indigo-400"
+                title="Choose a video already uploaded to Cloudflare R2"
+              >
+                <FolderOpen className="h-3.5 w-3.5" />
+                Select Uploaded Video
+              </button>
+            </>
+          )}
+
+          <button
+            type="button"
+            onClick={() => {
+              if (tab === 'videos') onChangeVideos([...videos, emptyVideo()]);
+              else if (tab === 'downloads') onChangeDownloads([...downloads, emptyDownload()]);
+              else onChangeSubtitles([...subtitles, emptySubtitle()]);
+            }}
+            className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 px-3 py-1.5 text-xs font-semibold text-white"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            Add {tab === 'videos' ? 'Stream' : tab === 'downloads' ? 'Download' : 'Subtitle'}
+          </button>
+        </div>
       </div>
+
+      {uploading && (
+        <div className="px-4 py-2.5 bg-orange-500/10 border-b border-orange-500/20 space-y-1.5">
+          <div className="flex items-center justify-between text-xs font-semibold text-orange-400">
+            <span className="inline-flex items-center gap-1.5 truncate">
+              <Upload className="h-3.5 w-3.5 shrink-0" />
+              Uploading directly to Cloudflare R2 (as-is, no transcoding): {uploadName}
+            </span>
+            <span>{uploadPct}%</span>
+          </div>
+          <div className="h-1.5 w-full rounded-full bg-slate-800 overflow-hidden">
+            <div className="h-full bg-orange-500 transition-all duration-150" style={{ width: `${uploadPct}%` }} />
+          </div>
+        </div>
+      )}
 
       <div className="p-4 space-y-3">
         {tab === 'videos' && (
@@ -206,16 +387,29 @@ export default function MediaLinksEditor({
                   />
                 </div>
 
-                <input
-                  value={v.link || ''}
-                  onChange={(e) => {
-                    const next = [...videos];
-                    next[idx] = { ...v, link: e.target.value };
-                    onChangeVideos(next);
-                  }}
-                  placeholder="https://... (MP4, M3U8, YouTube, Embed URL)"
-                  className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-2.5 py-1.5 text-xs font-mono"
-                />
+                <div className="flex items-center gap-2">
+                  <input
+                    value={v.link || ''}
+                    onChange={(e) => {
+                      const next = [...videos];
+                      next[idx] = { ...v, link: e.target.value };
+                      onChangeVideos(next);
+                    }}
+                    placeholder="https://... (MP4, M3U8, YouTube, Embed URL)"
+                    className="flex-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-2.5 py-1.5 text-xs font-mono"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setLibraryTargetIdx(idx);
+                      setLibraryOpen(true);
+                    }}
+                    title="Pick from Uploaded R2 Library"
+                    className="inline-flex items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-indigo-500/10 px-2.5 py-1.5 text-xs font-semibold text-indigo-400 shrink-0"
+                  >
+                    <FolderOpen className="h-3.5 w-3.5" /> R2
+                  </button>
+                </div>
 
                 <div className="flex flex-wrap gap-4 text-xs text-slate-600 dark:text-slate-300">
                   {[
@@ -320,16 +514,29 @@ export default function MediaLinksEditor({
                     className="rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-2.5 py-1.5 text-xs"
                   />
                 </div>
-                <input
-                  value={d.link || ''}
-                  onChange={(e) => {
-                    const next = [...downloads];
-                    next[idx] = { ...d, link: e.target.value };
-                    onChangeDownloads(next);
-                  }}
-                  placeholder="Download URL"
-                  className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-2.5 py-1.5 text-xs font-mono"
-                />
+                <div className="flex items-center gap-2">
+                  <input
+                    value={d.link || ''}
+                    onChange={(e) => {
+                      const next = [...downloads];
+                      next[idx] = { ...d, link: e.target.value };
+                      onChangeDownloads(next);
+                    }}
+                    placeholder="Download URL"
+                    className="flex-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-2.5 py-1.5 text-xs font-mono"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setLibraryTargetIdx(idx);
+                      setLibraryOpen(true);
+                    }}
+                    title="Pick from Uploaded R2 Library"
+                    className="inline-flex items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-indigo-500/10 px-2.5 py-1.5 text-xs font-semibold text-indigo-400 shrink-0"
+                  >
+                    <FolderOpen className="h-3.5 w-3.5" /> R2
+                  </button>
+                </div>
                 <div className="flex flex-wrap gap-4 text-xs text-slate-600 dark:text-slate-300">
                   {[
                     ['external', 'External Browser'],
@@ -436,6 +643,16 @@ export default function MediaLinksEditor({
         onClose={() => setPreview(null)}
         title={preview?.title}
         url={preview?.url}
+      />
+
+      <VideoLibraryModal
+        open={libraryOpen}
+        onClose={() => {
+          setLibraryOpen(false);
+          setLibraryTargetIdx(null);
+        }}
+        mediaType={mediaType}
+        onSelect={applySelectedVideo}
       />
     </div>
   );

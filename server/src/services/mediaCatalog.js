@@ -1,4 +1,5 @@
 import { queryAll, queryOne, execute, nowIso } from '../db/mysql.js';
+import { ensureVideoLibraryTable } from '../db/schema.js';
 import { tmdbGet, getTmdbConfig } from './tmdb.js';
 
 export const MEDIA_SCHEMAS = {
@@ -432,6 +433,21 @@ export async function syncLinks(cfg, ownerId, links, kind, replaceMissing = true
           `INSERT INTO ${table} (${fk}, position, sort_order, server, quality, header, useragent, link, lang, video_name, embed, is_premium, youtubelink, hls, supported_hosts, drm, drmuuid, drmlicenceuri, status, is_active${extraCol}, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?${extraPlaceholder}, ?, ?)`,
           [...common, ...extraVals, now, now]
         );
+      }
+    }
+    await ensureVideoLibraryTable();
+    for (const link of links) {
+      if (!link || !link.link) continue;
+      if (cfg.kind === 'movie') {
+        await execute('UPDATE video_library SET movie_id = COALESCE(movie_id, ?) WHERE stream_url = ?', [
+          ownerId,
+          String(link.link).trim(),
+        ]).catch(() => {});
+      } else if (cfg.kind === 'serie') {
+        await execute('UPDATE video_library SET episode_id = COALESCE(episode_id, ?) WHERE stream_url = ?', [
+          ownerId,
+          String(link.link).trim(),
+        ]).catch(() => {});
       }
     }
     return;

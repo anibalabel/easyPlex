@@ -757,6 +757,9 @@ export default function EpisodicCatalogPage({ kind = 'serie' }) {
                   subtitles={editingEpisode.substitles || []}
                   onChangeSubtitles={(substitles) => setEditingEpisode({ ...editingEpisode, substitles })}
                   servers={servers}
+                  mediaType={kind === 'anime' ? 'anime' : 'episode'}
+                  mediaId={editingEpisode.id || null}
+                  defaultTitle={editingEpisode.name || ''}
                 />
 
                 <div className="flex justify-end gap-2">

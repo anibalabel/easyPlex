@@ -586,6 +586,9 @@ export default function MoviesPage() {
             subtitles={form.substitles || []}
             onChangeSubtitles={(substitles) => setForm({ ...form, substitles })}
             servers={servers}
+            mediaType="movie"
+            mediaId={form.id || null}
+            defaultTitle={form.title || ''}
           />
 
           <div className="flex justify-end gap-2 pt-2">

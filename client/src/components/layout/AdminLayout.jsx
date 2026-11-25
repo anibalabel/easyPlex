@@ -76,7 +76,7 @@ const NAV_GROUPS = [
       { to: '/admin/upcoming', label: 'Upcoming', icon: CalendarClock, perm: 'upcoming.view' },
       { to: '/admin/previews', label: 'Previews', icon: Eye, perm: 'movies.view' },
       { to: '/admin/requests', label: 'Requests', icon: Inbox, perm: 'movie_requests.view' },
-      { to: '/admin/video-conversion', label: 'Video Conversion', icon: FileVideo, perm: 'video_conversion.view' },
+      { to: '/admin/video-conversion', label: 'Video Storage & R2', icon: FileVideo, perm: 'video_conversion.view' },
     ],
   },
   {
