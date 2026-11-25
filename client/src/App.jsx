@@ -7,7 +7,6 @@ import { ToastProvider } from './contexts/ToastContext';
 
 import AdminLayout from './components/layout/AdminLayout';
 import LoginPage from './pages/auth/LoginPage';
-import RegisterPage from './pages/auth/RegisterPage';
 import ForgotPasswordPage from './pages/auth/ForgotPasswordPage';
 import ResetPasswordPage from './pages/auth/ResetPasswordPage';
 import VerifyEmailPage from './pages/auth/VerifyEmailPage';
@@ -72,7 +71,7 @@ export default function App() {
             <BrowserRouter>
               <Routes>
                 <Route path="/login" element={<LoginPage />} />
-                <Route path="/register" element={<RegisterPage />} />
+                <Route path="/register" element={<Navigate to="/login" replace />} />
                 <Route path="/password/reset" element={<ForgotPasswordPage />} />
                 <Route path="/password/reset/:token" element={<ResetPasswordPage />} />
                 <Route path="/email/verify" element={<VerifyEmailPage />} />

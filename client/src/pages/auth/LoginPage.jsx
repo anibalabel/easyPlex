@@ -10,8 +10,8 @@ export default function LoginPage() {
   const { toast } = useToast();
   const navigate = useNavigate();
 
-  const [email, setEmail] = useState('admin@easyplex.com');
-  const [password, setPassword] = useState('ChangeMe!EasyPlex24');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
 
@@ -58,7 +58,7 @@ export default function LoginPage() {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 className="w-full rounded-xl border border-slate-700 bg-slate-800/80 pl-10 pr-3.5 py-2.5 text-sm text-white focus:border-indigo-500 focus:outline-none"
-                placeholder="admin@easyplex.com"
+                placeholder="email@example.com"
               />
             </div>
           </div>
@@ -93,10 +93,7 @@ export default function LoginPage() {
           </button>
         </form>
 
-        <div className="mt-6 pt-5 border-t border-slate-800 flex items-center justify-between text-xs text-slate-400">
-          <Link to="/register" className="hover:text-white font-medium">
-            Create an account
-          </Link>
+        <div className="mt-6 pt-5 border-t border-slate-800 flex items-center justify-end text-xs text-slate-400">
           <Link to="/installer" className="inline-flex items-center gap-1 hover:text-indigo-400 font-medium">
             <Wrench className="h-3.5 w-3.5" /> Setup Wizard
           </Link>

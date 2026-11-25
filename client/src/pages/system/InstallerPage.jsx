@@ -116,8 +116,8 @@ export default function InstallerPage() {
           <div className="flex items-center gap-3">
             <img src="/favicon.png" alt="EasyPlex" className="h-10 w-10 rounded-2xl" />
             <div>
-              <h1 className="text-lg font-bold">Remote MySQL Connection Setup</h1>
-              <p className="text-xs text-slate-400">Cloudflare Workers • Remote Database Only</p>
+              <h1 className="text-lg font-bold">MySQL Connection Setup</h1>
+              <p className="text-xs text-slate-400">Database Diagnostics &amp; Environment Configuration</p>
             </div>
           </div>
 
@@ -154,8 +154,8 @@ export default function InstallerPage() {
                   )}
                   <span>
                     {status.connected
-                      ? `Connected (${status.app_name || status.database}, ${status.tables_count} tables, ${status.latency_ms} ms)`
-                      : 'Remote MySQL not connected'}
+                      ? `Connected (${status.app_name || 'MySQL'}, ${status.tables_count} tables, ${status.latency_ms} ms)`
+                      : 'MySQL not connected'}
                   </span>
                 </div>
                 <span className="rounded-lg bg-slate-900/70 px-2.5 py-1 text-[11px] font-mono text-slate-300">
@@ -189,7 +189,7 @@ export default function InstallerPage() {
                   required
                   value={form.host}
                   onChange={(e) => setForm({ ...form, host: e.target.value })}
-                  placeholder="mysql.us.cloudlogin.co"
+                  placeholder="localhost"
                   className="w-full rounded-xl border border-slate-700 bg-slate-800 px-3 py-2 text-sm font-mono"
                 />
               </div>
@@ -210,7 +210,7 @@ export default function InstallerPage() {
                   required
                   value={form.database}
                   onChange={(e) => setForm({ ...form, database: e.target.value })}
-                  placeholder="plusmovie_st"
+                  placeholder="namedb"
                   className="w-full rounded-xl border border-slate-700 bg-slate-800 px-3 py-2 text-sm font-mono"
                 />
               </div>
@@ -221,7 +221,7 @@ export default function InstallerPage() {
                   required
                   value={form.username}
                   onChange={(e) => setForm({ ...form, username: e.target.value })}
-                  placeholder="plusmovie_st"
+                  placeholder="userdb"
                   className="w-full rounded-xl border border-slate-700 bg-slate-800 px-3 py-2 text-sm font-mono"
                 />
               </div>
@@ -294,7 +294,7 @@ export default function InstallerPage() {
               {saveResult?.saved_to === 'env_required' && (
                 <div className="pt-2 space-y-2 border-t border-emerald-500/20">
                   <p className="text-slate-200">
-                    To make Cloudflare remember this connection permanently across isolates without re-entering it, bind a KV namespace named <code className="font-mono text-emerald-300">CONFIG_KV</code> OR paste these variables into <strong>Cloudflare Worker -&gt; Settings -&gt; Variables and Secrets</strong>:
+                    Save these variables in your <code className="font-mono text-emerald-300">.env</code> file / cPanel Node.js App (or in <strong>Cloudflare Worker -&gt; Settings -&gt; Variables and Secrets</strong> / <code className="font-mono text-emerald-300">CONFIG_KV</code>):
                   </p>
                   <div className="relative">
                     <pre className="rounded-xl bg-slate-950 p-3 text-[11px] font-mono text-emerald-300 overflow-x-auto">

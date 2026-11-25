@@ -47,7 +47,7 @@ export default function VerifyEmailPage() {
               required
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              placeholder="user@easyplex.com"
+              placeholder="email@example.com"
               className="w-full rounded-xl border border-slate-700 bg-slate-800/80 px-3.5 py-2.5 text-sm text-white"
             />
             <button

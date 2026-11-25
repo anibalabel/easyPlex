@@ -230,19 +230,20 @@ function activeDbSource() {
   return 'none';
 }
 
-router.get('/installer-api/status', async (_req, res) => {
+router.get('/installer-api/status', async (req, res) => {
   const source = activeDbSource();
   const check = await testDirectConnection();
+  const isAdmin = Boolean(req.user?.is_admin);
   return res.json({
     connected: check.ok,
     configured: source !== 'none',
     source,
     kv_bound: Boolean(env.configKv),
     hyperdrive_bound: Boolean(env.hyperdrive),
-    host: env.dbHost || (env.hyperdrive ? 'HYPERDRIVE' : ''),
-    port: env.dbPort || 3306,
-    database: env.dbDatabase || env.hyperdrive?.database || '',
-    username: env.dbUsername || env.hyperdrive?.user || '',
+    host: isAdmin ? env.dbHost || (env.hyperdrive ? 'HYPERDRIVE' : '') : '',
+    port: isAdmin ? env.dbPort || 3306 : 3306,
+    database: isAdmin ? env.dbDatabase || env.hyperdrive?.database || '' : '',
+    username: isAdmin ? env.dbUsername || env.hyperdrive?.user || '' : '',
     ssl: Boolean(env.dbSsl),
     app_name: check.app_name || env.appName,
     tables_count: check.tables_count || 0,
@@ -251,7 +252,9 @@ router.get('/installer-api/status', async (_req, res) => {
     error_code: check.ok ? null : check.code,
     error_message: check.ok ? null : check.message,
     hint: check.ok ? null : check.hint,
-    db_driver: `mysql (${env.dbHost || 'hyperdrive'}:${env.dbPort}/${env.dbDatabase})`,
+    db_driver: isAdmin
+      ? `mysql (${env.dbHost || 'hyperdrive'}:${env.dbPort}/${env.dbDatabase})`
+      : 'mysql',
     node_version:
       !isWorkersRuntime && typeof process !== 'undefined' && process.versions?.node
         ? `Node.js ${process.versions.node}`
