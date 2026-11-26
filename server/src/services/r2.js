@@ -166,11 +166,7 @@ function buildPathStyleUrl(cfg, key = '') {
   };
 }
 
-/**
- * Generates an AWS S3 SigV4 presigned PUT URL for direct browser-to-R2 uploads
- * without passing multi-hundred-MB payloads through Cloudflare Workers.
- */
-export function presignPutObject(cfg, { key, expiresSeconds = 3600 } = {}) {
+function presignS3Url(cfg, { method = 'PUT', key, queryParams = {}, expiresSeconds = 3600 } = {}) {
   if (!cfg?.enabled) {
     throw new Error('Cloudflare R2 storage is not configured in Settings.');
   }
@@ -181,16 +177,24 @@ export function presignPutObject(cfg, { key, expiresSeconds = 3600 } = {}) {
   const { endpointUrl, canonicalUri, fullUrl } = buildPathStyleUrl(cfg, key);
   const credentialScope = `${dateStamp}/${region}/${service}/aws4_request`;
 
-  const queryParams = {
+  const allQuery = {
+    ...queryParams,
     'X-Amz-Algorithm': 'AWS4-HMAC-SHA256',
     'X-Amz-Credential': `${cfg.accessKeyId}/${credentialScope}`,
     'X-Amz-Date': amzDate,
     'X-Amz-Expires': String(ttl),
     'X-Amz-SignedHeaders': 'host',
   };
-  const qs = canonicalQueryString(queryParams);
+  const qs = canonicalQueryString(allQuery);
   const canonicalHeaders = `host:${endpointUrl.host}\n`;
-  const canonicalRequest = ['PUT', canonicalUri, qs, canonicalHeaders, 'host', 'UNSIGNED-PAYLOAD'].join('\n');
+  const canonicalRequest = [
+    method.toUpperCase(),
+    canonicalUri,
+    qs,
+    canonicalHeaders,
+    'host',
+    'UNSIGNED-PAYLOAD',
+  ].join('\n');
   const stringToSign = ['AWS4-HMAC-SHA256', amzDate, credentialScope, sha256Hex(canonicalRequest)].join('\n');
   const signature = crypto
     .createHmac('sha256', deriveSigningKey(cfg.secretAccessKey, dateStamp, region, service))
@@ -198,6 +202,26 @@ export function presignPutObject(cfg, { key, expiresSeconds = 3600 } = {}) {
     .digest('hex');
 
   return `${fullUrl}?${qs}&X-Amz-Signature=${signature}`;
+}
+
+/**
+ * Generates an AWS S3 SigV4 presigned PUT URL for direct browser-to-R2 uploads
+ * without passing multi-hundred-MB payloads through Cloudflare Workers.
+ */
+export function presignPutObject(cfg, { key, expiresSeconds = 3600 } = {}) {
+  return presignS3Url(cfg, { method: 'PUT', key, expiresSeconds });
+}
+
+export function presignUploadPart(cfg, { key, uploadId, partNumber, expiresSeconds = 7200 } = {}) {
+  return presignS3Url(cfg, {
+    method: 'PUT',
+    key,
+    queryParams: {
+      partNumber: String(partNumber),
+      uploadId: String(uploadId),
+    },
+    expiresSeconds,
+  });
 }
 
 async function signedS3Fetch(
@@ -352,4 +376,65 @@ export async function putBucketCorsR2(cfg, allowedOrigins = []) {
       'Content-MD5': md5Base64(buf),
     },
   });
+}
+
+export async function createMultipartUploadR2(
+  cfg,
+  { key, contentType = 'video/mp4', cacheControl = 'public, max-age=31536000, immutable' }
+) {
+  const response = await signedS3Fetch(cfg, {
+    method: 'POST',
+    key,
+    query: { uploads: '' },
+    body: Buffer.alloc(0),
+    headers: {
+      'Content-Type': contentType,
+      'Cache-Control': cacheControl,
+    },
+  });
+  const xml = await response.text();
+  const uploadId = extractXmlTag(xml, 'UploadId');
+  if (!uploadId) {
+    throw new Error('Cloudflare R2 did not return an UploadId for multipart upload.');
+  }
+  return uploadId;
+}
+
+export async function completeMultipartUploadR2(cfg, { key, uploadId, parts = [] }) {
+  if (!uploadId || !Array.isArray(parts) || parts.length === 0) {
+    throw new Error('uploadId and uploaded parts are required to complete multipart upload.');
+  }
+  const sorted = [...parts].sort((a, b) => Number(a.partNumber) - Number(b.partNumber));
+  const partTags = sorted
+    .map((p) => {
+      const num = Number(p.partNumber);
+      const rawEtag = String(p.etag || '').trim().replace(/^"+|"+$/g, '');
+      if (!num || !rawEtag) {
+        throw new Error(`Missing ETag for uploaded part ${num || '?'}. Ensure R2 CORS exposes the ETag header.`);
+      }
+      return `<Part><PartNumber>${num}</PartNumber><ETag>"${rawEtag}"</ETag></Part>`;
+    })
+    .join('');
+
+  const xmlBody = `<CompleteMultipartUpload>${partTags}</CompleteMultipartUpload>`;
+  await signedS3Fetch(cfg, {
+    method: 'POST',
+    key,
+    query: { uploadId: String(uploadId) },
+    body: Buffer.from(xmlBody, 'utf8'),
+    headers: {
+      'Content-Type': 'application/xml',
+    },
+  });
+  return true;
+}
+
+export async function abortMultipartUploadR2(cfg, { key, uploadId }) {
+  if (!key || !uploadId) return false;
+  await signedS3Fetch(cfg, {
+    method: 'DELETE',
+    key,
+    query: { uploadId: String(uploadId) },
+  });
+  return true;
 }
