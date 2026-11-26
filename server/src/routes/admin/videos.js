@@ -42,10 +42,11 @@ import {
 
 const MULTIPART_THRESHOLD_BYTES = 50 * 1024 * 1024;
 const DEFAULT_PART_SIZE_BYTES = 32 * 1024 * 1024;
+const PROXY_PART_SIZE_BYTES = 16 * 1024 * 1024;
 
-function computeMultipartPlan(fileSize) {
+function computeMultipartPlan(fileSize, proxyMode = false) {
   const minPartSize = 10 * 1024 * 1024;
-  let partSize = DEFAULT_PART_SIZE_BYTES;
+  let partSize = proxyMode ? PROXY_PART_SIZE_BYTES : DEFAULT_PART_SIZE_BYTES;
   if (Math.ceil(fileSize / partSize) > 1000) {
     partSize = Math.max(minPartSize, Math.ceil(fileSize / 1000));
     const mb = 1024 * 1024;
@@ -358,16 +359,20 @@ router.post('/admin/video/r2/presign', requirePermission('video_conversion.creat
   const publicUrl = buildR2DeliveryUrl(r2Cfg, key, settings);
 
   if (fileSize > MULTIPART_THRESHOLD_BYTES) {
+    const proxyMode = Boolean(req.body?.proxy_mode);
     const uploadId = await createMultipartUploadR2(r2Cfg, { key, contentType });
-    const { partSize, totalParts } = computeMultipartPlan(fileSize);
-    const initialCount = Math.min(totalParts, 150);
+    const { partSize, totalParts } = computeMultipartPlan(fileSize, proxyMode);
     const partUrls = {};
-    for (let p = 1; p <= initialCount; p += 1) {
-      partUrls[p] = presignUploadPart(r2Cfg, { key, uploadId, partNumber: p, expiresSeconds: 7200 });
+    if (!proxyMode) {
+      const initialCount = Math.min(totalParts, 150);
+      for (let p = 1; p <= initialCount; p += 1) {
+        partUrls[p] = presignUploadPart(r2Cfg, { key, uploadId, partNumber: p, expiresSeconds: 7200 });
+      }
     }
     return res.json({
       status: 200,
       mode: 'multipart_r2',
+      proxy_mode: proxyMode,
       r2_configured: true,
       upload_id: uploadId,
       key,
@@ -422,6 +427,42 @@ router.post('/admin/video/r2/multipart/sign-part', requirePermission('video_conv
   }
   return res.json({ status: 200, part_urls: partUrls });
 });
+
+// 1c) Same-origin multipart chunk proxy fallback (for Node.js or when R2 CORS cannot be edited)
+router.put(
+  '/admin/video/r2/multipart/upload-part',
+  requirePermission('video_conversion.create'),
+  express.raw({ type: '*/*', limit: '64mb' }),
+  async (req, res) => {
+    const key = String(req.query?.key || '').trim().replace(/^\/+/, '');
+    const uploadId = String(req.query?.uploadId || '').trim();
+    const partNumber = Number(req.query?.partNumber || 0);
+    if (!key || !uploadId || !Number.isInteger(partNumber) || partNumber < 1) {
+      return res.status(400).json({ status: 400, message: 'key, uploadId and valid partNumber are required.' });
+    }
+    const settings = await getSettingsRow();
+    const r2Cfg = getR2Config(settings);
+    if (!r2Cfg.enabled) {
+      return res.status(422).json({ status: 422, message: 'Cloudflare R2 is not configured.' });
+    }
+    const bodyBuf = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body || '');
+    const presignedUrl = presignUploadPart(r2Cfg, { key, uploadId, partNumber, expiresSeconds: 3600 });
+    const r2Res = await fetch(presignedUrl, {
+      method: 'PUT',
+      headers: { 'content-length': String(bodyBuf.length) },
+      body: bodyBuf,
+    });
+    if (!r2Res.ok) {
+      const errText = await r2Res.text().catch(() => '');
+      return res.status(502).json({
+        status: 502,
+        message: `R2 chunk upload failed (${r2Res.status}): ${errText.slice(0, 250)}`,
+      });
+    }
+    const etag = r2Res.headers.get('etag') || r2Res.headers.get('ETag') || '';
+    return res.json({ status: 200, partNumber, etag });
+  }
+);
 
 // 2) Register a video after direct PUT or S3 Multipart Upload to R2 finishes
 router.post('/admin/video/r2/complete', requirePermission('video_conversion.create'), async (req, res) => {

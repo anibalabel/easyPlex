@@ -1,4 +1,4 @@
-import api, { getErrorMessage } from './api';
+import api, { getErrorMessage, getStoredToken } from './api';
 
 export function formatBytes(bytes) {
   const num = Number(bytes || 0);
@@ -19,7 +19,11 @@ function makeCancelError() {
   return err;
 }
 
-function putBlobWithProgress(url, blob, { contentType = '', signal, onProgress } = {}) {
+function putBlobWithProgress(
+  url,
+  blob,
+  { contentType = '', withCredentials = false, authToken = '', parseJson = false, signal, onProgress } = {}
+) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
       reject(makeCancelError());
@@ -28,6 +32,10 @@ function putBlobWithProgress(url, blob, { contentType = '', signal, onProgress }
 
     const xhr = new XMLHttpRequest();
     xhr.open('PUT', url, true);
+    xhr.withCredentials = withCredentials;
+    if (authToken) {
+      xhr.setRequestHeader('Authorization', `Bearer ${authToken}`);
+    }
     if (contentType) {
       xhr.setRequestHeader('Content-Type', contentType);
     }
@@ -59,11 +67,27 @@ function putBlobWithProgress(url, blob, { contentType = '', signal, onProgress }
     xhr.onload = () => {
       cleanup();
       if (xhr.status >= 200 && xhr.status < 300) {
+        let json = null;
+        if (parseJson && xhr.responseText) {
+          try {
+            json = JSON.parse(xhr.responseText);
+          } catch {
+            json = null;
+          }
+        }
         resolve({
-          etag: xhr.getResponseHeader('ETag') || xhr.getResponseHeader('etag') || '',
+          etag: json?.etag || xhr.getResponseHeader('ETag') || xhr.getResponseHeader('etag') || '',
+          json,
         });
       } else {
-        const err = new Error(`R2 upload HTTP ${xhr.status}`);
+        let msg = `R2 upload HTTP ${xhr.status}`;
+        try {
+          const parsed = JSON.parse(xhr.responseText || '{}');
+          if (parsed?.message) msg = parsed.message;
+        } catch {
+          // ignore
+        }
+        const err = new Error(msg);
         err.httpStatus = xhr.status;
         reject(err);
       }
@@ -88,14 +112,16 @@ function putBlobWithProgress(url, blob, { contentType = '', signal, onProgress }
 async function uploadMultipartParts({
   file,
   presign,
+  useWorkerProxy = false,
   signal,
   onProgress,
 }) {
-  const partSize = Number(presign.part_size || 32 * 1024 * 1024);
+  const partSize = Number(presign.part_size || (useWorkerProxy ? 16 : 32) * 1024 * 1024);
   const totalParts = Number(presign.total_parts || Math.ceil(file.size / partSize));
   const partUrls = { ...(presign.part_urls || {}) };
   const loadedByPart = new Map();
   const completedParts = new Array(totalParts);
+  const authToken = useWorkerProxy ? getStoredToken() : '';
 
   const reportAggregate = () => {
     if (!onProgress) return;
@@ -106,9 +132,8 @@ async function uploadMultipartParts({
     onProgress(pct, 'uploading', { loaded: clamped, total: file.size, totalParts });
   };
 
-  const getPartUrl = async (partNumber) => {
+  const getDirectPartUrl = async (partNumber) => {
     if (partUrls[partNumber]) return partUrls[partNumber];
-    // Fetch next batch of up to 100 presigned part URLs on demand for huge files (> ~4.8 GB)
     const batch = [];
     for (let p = partNumber; p <= Math.min(totalParts, partNumber + 99); p += 1) {
       if (!partUrls[p]) batch.push(p);
@@ -122,64 +147,99 @@ async function uploadMultipartParts({
     return partUrls[partNumber];
   };
 
-  let cursor = 1;
-  const concurrency = Math.min(3, totalParts);
+  const uploadSinglePart = async (partNumber) => {
+    const start = (partNumber - 1) * partSize;
+    const end = Math.min(file.size, start + partSize);
+    const chunk = file.slice(start, end);
 
-  const worker = async () => {
-    while (true) {
+    let lastErr = null;
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
       if (signal?.aborted) throw makeCancelError();
-      const partNumber = cursor;
-      cursor += 1;
-      if (partNumber > totalParts) return;
+      try {
+        const res = useWorkerProxy
+          ? await putBlobWithProgress(
+              `/admin/video/r2/multipart/upload-part?key=${encodeURIComponent(presign.key)}&uploadId=${encodeURIComponent(
+                presign.upload_id
+              )}&partNumber=${partNumber}`,
+              chunk,
+              {
+                contentType: 'application/octet-stream',
+                withCredentials: true,
+                authToken,
+                parseJson: true,
+                signal,
+                onProgress: (loaded) => {
+                  loadedByPart.set(partNumber, loaded);
+                  reportAggregate();
+                },
+              }
+            )
+          : await putBlobWithProgress(await getDirectPartUrl(partNumber), chunk, {
+              signal,
+              onProgress: (loaded) => {
+                loadedByPart.set(partNumber, loaded);
+                reportAggregate();
+              },
+            });
 
-      const start = (partNumber - 1) * partSize;
-      const end = Math.min(file.size, start + partSize);
-      const chunk = file.slice(start, end);
-
-      let lastErr = null;
-      for (let attempt = 1; attempt <= 3; attempt += 1) {
-        if (signal?.aborted) throw makeCancelError();
-        try {
-          const url = await getPartUrl(partNumber);
-          const res = await putBlobWithProgress(url, chunk, {
-            signal,
-            onProgress: (loaded) => {
-              loadedByPart.set(partNumber, loaded);
-              reportAggregate();
-            },
-          });
-          if (!res.etag) {
-            const err = new Error(
-              `R2 did not expose the ETag header on multipart chunk #${partNumber}. Click "Enable R2 CORS" in Video Storage & R2 so ExposeHeader includes ETag.`
-            );
-            err.missingEtag = true;
-            throw err;
-          }
-          loadedByPart.set(partNumber, chunk.size);
-          reportAggregate();
-          completedParts[partNumber - 1] = { partNumber, etag: res.etag };
-          lastErr = null;
-          break;
-        } catch (err) {
-          lastErr = err;
-          if (err?.isCancelled || err?.missingEtag) throw err;
-          if (attempt < 3) {
-            await new Promise((r) => setTimeout(r, attempt * 1000));
-          }
+        if (!res.etag) {
+          const err = new Error(
+            `R2 did not expose the ETag header on multipart chunk #${partNumber}.`
+          );
+          err.missingEtag = true;
+          throw err;
+        }
+        loadedByPart.set(partNumber, chunk.size);
+        reportAggregate();
+        completedParts[partNumber - 1] = { partNumber, etag: res.etag };
+        lastErr = null;
+        return;
+      } catch (err) {
+        lastErr = err;
+        if (err?.isCancelled || err?.missingEtag) throw err;
+        if (attempt === 1 && err?.isCorsOrNetwork && !useWorkerProxy) {
+          // Immediately bubble Part 1 CORS failure so caller can auto-enable CORS or switch to worker proxy
+          throw err;
+        }
+        if (attempt < 3) {
+          await new Promise((r) => setTimeout(r, attempt * 1000));
         }
       }
-      if (lastErr) throw lastErr;
     }
+    if (lastErr) throw lastErr;
   };
 
-  await Promise.all(Array.from({ length: concurrency }, () => worker()));
+  // Probe Part 1 first when using direct R2 so CORS errors are caught before launching parallel parts
+  let startFromPart = 1;
+  if (!useWorkerProxy) {
+    await uploadSinglePart(1);
+    startFromPart = 2;
+  }
+
+  let cursor = startFromPart;
+  const concurrency = Math.min(useWorkerProxy ? 2 : 3, Math.max(0, totalParts - startFromPart + 1));
+
+  if (concurrency > 0) {
+    const worker = async () => {
+      while (true) {
+        if (signal?.aborted) throw makeCancelError();
+        const partNumber = cursor;
+        cursor += 1;
+        if (partNumber > totalParts) return;
+        await uploadSinglePart(partNumber);
+      }
+    };
+    await Promise.all(Array.from({ length: concurrency }, () => worker()));
+  }
+
   return completedParts;
 }
 
 /**
  * Uploads a video file directly to Cloudflare R2 (as-is, without transcoding).
- * - Files > 50 MB automatically stream in parallel S3 Multipart chunks (up to multi-GB / 5 TB).
- * - Files <= 50 MB upload in a single direct presigned R2 PUT (or server fallback <= 95 MB if CORS isn't set).
+ * - Files > 50 MB use R2 S3 Multipart (auto-configures CORS if needed, and falls back
+ *   transparently to same-origin streaming Worker chunks if bucket CORS cannot be modified).
+ * - Files <= 50 MB use single presigned R2 PUT (or server upload fallback if CORS is blocked).
  */
 export async function uploadVideoDirect({
   file,
@@ -196,25 +256,103 @@ export async function uploadVideoDirect({
 
   if (onProgress) onProgress(1, 'preparing', { loaded: 0, total: file.size });
 
-  const { data: presign } = await api.post('/admin/video/r2/presign', {
-    filename: file.name,
-    content_type: file.type || 'video/mp4',
-    file_size: file.size,
-    type,
-    quality,
-    title,
-    movie_id: movieId,
-    episode_id: episodeId,
-  });
+  const requestPresign = async (proxyMode = false) => {
+    const { data } = await api.post('/admin/video/r2/presign', {
+      filename: file.name,
+      content_type: file.type || 'video/mp4',
+      file_size: file.size,
+      type,
+      quality,
+      title,
+      movie_id: movieId,
+      episode_id: episodeId,
+      proxy_mode: proxyMode,
+    });
+    return data;
+  };
+
+  let presign = await requestPresign(false);
 
   if (presign?.mode === 'multipart_r2' && presign.upload_id) {
+    const completeMultipart = async (activePresign, parts) => {
+      if (onProgress) onProgress(99, 'registering', { loaded: file.size, total: file.size });
+      const { data: registered } = await api.post('/admin/video/r2/complete', {
+        key: activePresign.key,
+        upload_id: activePresign.upload_id,
+        parts,
+        public_url: activePresign.public_url,
+        original_name: file.name,
+        title: title || '',
+        quality: quality || 'Original',
+        file_size: file.size,
+        type,
+        movie_id: movieId,
+        episode_id: episodeId,
+        auto_attach: autoAttach,
+      });
+      if (onProgress) onProgress(100, 'done', { loaded: file.size, total: file.size });
+      return registered;
+    };
+
     try {
-      const parts = await uploadMultipartParts({ file, presign, signal, onProgress });
+      const parts = await uploadMultipartParts({ file, presign, useWorkerProxy: false, signal, onProgress });
+      return await completeMultipart(presign, parts);
+    } catch (directErr) {
+      if (directErr?.isCancelled) {
+        api.post('/admin/video/r2/abort', { key: presign.key, upload_id: presign.upload_id }).catch(() => {});
+        throw directErr;
+      }
+
+      if (directErr?.isCorsOrNetwork || directErr?.missingEtag) {
+        // 1) Try enabling R2 bucket CORS automatically once
+        try {
+          await api.post('/admin/video/r2/cors');
+          await new Promise((r) => setTimeout(r, 300));
+          const retriedParts = await uploadMultipartParts({
+            file,
+            presign,
+            useWorkerProxy: false,
+            signal,
+            onProgress,
+          });
+          return await completeMultipart(presign, retriedParts);
+        } catch (corsOrRetryErr) {
+          if (corsOrRetryErr?.isCancelled) {
+            api.post('/admin/video/r2/abort', { key: presign.key, upload_id: presign.upload_id }).catch(() => {});
+            throw corsOrRetryErr;
+          }
+          // Abort direct session before switching cleanly to same-origin Worker stream proxy
+          await api.post('/admin/video/r2/abort', { key: presign.key, upload_id: presign.upload_id }).catch(() => {});
+        }
+
+        // 2) Seamless Same-Origin Worker Chunk Streaming Proxy fallback (zero R2 CORS required)
+        presign = await requestPresign(true);
+        try {
+          const proxyParts = await uploadMultipartParts({
+            file,
+            presign,
+            useWorkerProxy: true,
+            signal,
+            onProgress,
+          });
+          return await completeMultipart(presign, proxyParts);
+        } catch (proxyErr) {
+          api.post('/admin/video/r2/abort', { key: presign.key, upload_id: presign.upload_id }).catch(() => {});
+          if (proxyErr?.isCancelled) throw proxyErr;
+          throw new Error(proxyErr?.message || getErrorMessage(proxyErr));
+        }
+      }
+
+      api.post('/admin/video/r2/abort', { key: presign.key, upload_id: presign.upload_id }).catch(() => {});
+      throw new Error(directErr?.message || getErrorMessage(directErr));
+    }
+  }
+
+  if (presign?.mode === 'presigned_r2' && presign.upload_url) {
+    const completeSinglePut = async () => {
       if (onProgress) onProgress(99, 'registering', { loaded: file.size, total: file.size });
       const { data: registered } = await api.post('/admin/video/r2/complete', {
         key: presign.key,
-        upload_id: presign.upload_id,
-        parts,
         public_url: presign.public_url,
         original_name: file.name,
         title: title || '',
@@ -227,19 +365,8 @@ export async function uploadVideoDirect({
       });
       if (onProgress) onProgress(100, 'done', { loaded: file.size, total: file.size });
       return registered;
-    } catch (multiErr) {
-      api.post('/admin/video/r2/abort', { key: presign.key, upload_id: presign.upload_id }).catch(() => {});
-      if (multiErr?.isCancelled) throw multiErr;
-      if (multiErr?.isCorsOrNetwork) {
-        throw new Error(
-          `Large file multipart upload to Cloudflare R2 was blocked by CORS for ${window.location.origin}. Open Video Storage & R2 and click "Enable R2 CORS" first.`
-        );
-      }
-      throw new Error(multiErr?.message || getErrorMessage(multiErr));
-    }
-  }
+    };
 
-  if (presign?.mode === 'presigned_r2' && presign.upload_url) {
     try {
       await putBlobWithProgress(presign.upload_url, file, {
         contentType: file.type || '',
@@ -251,41 +378,24 @@ export async function uploadVideoDirect({
           }
         },
       });
-      if (onProgress) onProgress(99, 'registering', { loaded: file.size, total: file.size });
-      const { data: registered } = await api.post('/admin/video/r2/complete', {
-        key: presign.key,
-        public_url: presign.public_url,
-        original_name: file.name,
-        title: title || '',
-        quality: quality || 'Original',
-        file_size: file.size,
-        type,
-        movie_id: movieId,
-        episode_id: episodeId,
-        auto_attach: autoAttach,
-      });
-      if (onProgress) onProgress(100, 'done', { loaded: file.size, total: file.size });
-      return registered;
+      return await completeSinglePut();
     } catch (directErr) {
       if (directErr?.isCancelled) throw directErr;
-      if (directErr?.isCorsOrNetwork && presign.has_worker_fallback) {
-        if (onProgress) onProgress(5, 'uploading', { loaded: 0, total: file.size });
-        return uploadViaServerForm({
-          file,
-          type,
-          title,
-          quality,
-          movieId,
-          episodeId,
-          autoAttach,
-          signal,
-          onProgress,
-        });
-      }
       if (directErr?.isCorsOrNetwork) {
-        throw new Error(
-          `Direct upload to Cloudflare R2 failed (likely R2 CORS for ${window.location.origin}). Open Video Storage & R2 and click "Enable R2 CORS" first.`
-        );
+        if (presign.has_worker_fallback) {
+          if (onProgress) onProgress(5, 'uploading', { loaded: 0, total: file.size });
+          return uploadViaServerForm({
+            file,
+            type,
+            title,
+            quality,
+            movieId,
+            episodeId,
+            autoAttach,
+            signal,
+            onProgress,
+          });
+        }
       }
       throw new Error(getErrorMessage(directErr));
     }

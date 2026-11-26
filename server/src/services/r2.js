@@ -353,18 +353,22 @@ export async function listObjectsR2(cfg, { prefix = '', maxKeys = 500, videosOnl
   return items;
 }
 
-export async function putBucketCorsR2(cfg, allowedOrigins = []) {
-  const uniqueOrigins = Array.from(
-    new Set(
-      ['*', ...allowedOrigins]
-        .map((o) => String(o || '').trim().replace(/\/+$/, ''))
-        .filter(Boolean)
-    )
-  );
-  const originTags = uniqueOrigins
-    .map((o) => `    <AllowedOrigin>${o.replace(/&/g, '&amp;')}</AllowedOrigin>`)
-    .join('\n');
-  const xmlBody = `<CORSConfiguration>\n  <CORSRule>\n${originTags}\n    <AllowedMethod>GET</AllowedMethod>\n    <AllowedMethod>PUT</AllowedMethod>\n    <AllowedMethod>POST</AllowedMethod>\n    <AllowedMethod>DELETE</AllowedMethod>\n    <AllowedMethod>HEAD</AllowedMethod>\n    <AllowedHeader>*</AllowedHeader>\n    <ExposeHeader>ETag</ExposeHeader>\n    <MaxAgeSeconds>3600</MaxAgeSeconds>\n  </CORSRule>\n</CORSConfiguration>`;
+export async function putBucketCorsR2(cfg, _allowedOrigins = []) {
+  const xmlBody = [
+    '<CORSConfiguration>',
+    '  <CORSRule>',
+    '    <AllowedOrigin>*</AllowedOrigin>',
+    '    <AllowedMethod>GET</AllowedMethod>',
+    '    <AllowedMethod>PUT</AllowedMethod>',
+    '    <AllowedMethod>POST</AllowedMethod>',
+    '    <AllowedMethod>DELETE</AllowedMethod>',
+    '    <AllowedMethod>HEAD</AllowedMethod>',
+    '    <AllowedHeader>*</AllowedHeader>',
+    '    <ExposeHeader>ETag</ExposeHeader>',
+    '    <MaxAgeSeconds>3600</MaxAgeSeconds>',
+    '  </CORSRule>',
+    '</CORSConfiguration>',
+  ].join('\n');
 
   const buf = Buffer.from(xmlBody, 'utf8');
   return signedS3Fetch(cfg, {

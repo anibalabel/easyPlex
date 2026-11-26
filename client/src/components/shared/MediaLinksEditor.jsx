@@ -174,7 +174,7 @@ export default function MediaLinksEditor({
       }
     } catch (err) {
       if (err?.isCancelled) {
-        toast.info?.('Upload cancelled') || toast.error('Upload cancelled');
+        toast.info('Upload cancelled');
       } else {
         toast.error(err?.message || 'Video upload failed');
       }
@@ -210,7 +210,8 @@ export default function MediaLinksEditor({
             }`}
           >
             <Film className="h-3.5 w-3.5" />
-            Streaming Links ({videos.length})
+            <span>Streaming Links</span>
+            <span>({videos.length})</span>
           </button>
 
           {showDownloads && (
@@ -224,7 +225,8 @@ export default function MediaLinksEditor({
               }`}
             >
               <Download className="h-3.5 w-3.5" />
-              Downloads ({downloads.length})
+              <span>Downloads</span>
+              <span>({downloads.length})</span>
             </button>
           )}
 
@@ -239,7 +241,8 @@ export default function MediaLinksEditor({
               }`}
             >
               <Captions className="h-3.5 w-3.5" />
-              Subtitles ({subtitles.length})
+              <span>Subtitles</span>
+              <span>({subtitles.length})</span>
             </button>
           )}
         </div>
@@ -336,7 +339,9 @@ export default function MediaLinksEditor({
       <div className="p-4 space-y-3">
         {tab === 'videos' && (
           videos.length === 0 ? (
-            <p className="text-xs text-slate-500 text-center py-4">No streaming links yet. Click &quot;Add Stream&quot;.</p>
+            <p className="text-xs text-slate-500 text-center py-4">
+              No streaming links yet. Use &quot;Upload Video (R2)&quot;, &quot;Select Uploaded Video&quot;, or &quot;Add Stream&quot;.
+            </p>
           ) : (
             videos.map((v, idx) => (
               <div key={idx} className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-3 space-y-3">

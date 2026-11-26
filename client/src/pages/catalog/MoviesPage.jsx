@@ -1,4 +1,5 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import {
   Plus,
   Search,
@@ -10,6 +11,7 @@ import {
   Captions,
   Play,
   Power,
+  Cloud,
 } from 'lucide-react';
 import api, { getErrorMessage } from '../../lib/api';
 import { useToast } from '../../contexts/ToastContext';
@@ -69,6 +71,7 @@ export default function MoviesPage() {
   const [tmdbOpen, setTmdbOpen] = useState(false);
   const [autoSubOpen, setAutoSubOpen] = useState(false);
   const [autoSub, setAutoSub] = useState({ enabled: 0, default_languages: '["en"]', apply_to_bulk_import: 1, apply_to_manual_add: 1, skip_if_exists: 1, max_subtitles_per_language: 1 });
+  const linksSectionRef = useRef(null);
   const { toast } = useToast();
 
   const load = useCallback(async () => {
@@ -91,7 +94,7 @@ export default function MoviesPage() {
     api.get('/admin/servers/dataservers').then(({ data: s }) => setServers(s?.data || s || [])).catch(() => {});
   }, []);
 
-  const openEdit = async (movie) => {
+  const openEdit = async (movie, scrollToLinks = false) => {
     try {
       const { data: full } = await api.get(`/admin/movies/edit-data/${movie.id}`);
       setForm({
@@ -104,6 +107,11 @@ export default function MoviesPage() {
       });
       setSendNotification(false);
       setModalOpen(true);
+      if (scrollToLinks) {
+        setTimeout(() => {
+          linksSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }, 120);
+      }
     } catch (err) {
       toast.error(getErrorMessage(err));
     }
@@ -243,6 +251,12 @@ export default function MoviesPage() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          <Link
+            to="/admin/video-conversion"
+            className="inline-flex items-center gap-1.5 rounded-xl border border-orange-500/30 bg-orange-500/10 hover:bg-orange-500/20 px-3.5 py-2 text-xs font-semibold text-orange-400"
+          >
+            <Cloud className="h-4 w-4" /> Video Storage &amp; R2
+          </Link>
           <button
             type="button"
             onClick={openAutoSubtitle}
@@ -367,9 +381,14 @@ export default function MoviesPage() {
                       </div>
                     </td>
                     <td className="px-4 py-3 text-xs">
-                      <span className="inline-flex items-center gap-1 font-semibold text-indigo-500">
+                      <button
+                        type="button"
+                        onClick={() => openEdit(m, true)}
+                        title="Upload R2 Video or Manage Streaming Links"
+                        className="inline-flex items-center gap-1 rounded-lg bg-indigo-500/10 hover:bg-indigo-500/20 px-2.5 py-1 font-semibold text-indigo-400"
+                      >
                         <Play className="h-3.5 w-3.5" /> {(m.videos || []).length}
-                      </span>
+                      </button>
                     </td>
                     <td className="px-4 py-3 text-xs font-medium">{Number(m.views || 0).toLocaleString()}</td>
                     <td className="px-4 py-3">
@@ -385,6 +404,14 @@ export default function MoviesPage() {
                       </button>
                     </td>
                     <td className="px-4 py-3 text-right space-x-1">
+                      <button
+                        type="button"
+                        onClick={() => openEdit(m, true)}
+                        title="Upload / Select Video (R2)"
+                        className="rounded-lg p-1.5 text-orange-500 hover:bg-orange-500/10"
+                      >
+                        <Cloud className="h-4 w-4" />
+                      </button>
                       <button
                         type="button"
                         onClick={() => openEdit(m)}
@@ -578,18 +605,20 @@ export default function MoviesPage() {
             )}
           </div>
 
-          <MediaLinksEditor
-            videos={form.videos || []}
-            onChangeVideos={(videos) => setForm({ ...form, videos })}
-            downloads={form.downloads || []}
-            onChangeDownloads={(downloads) => setForm({ ...form, downloads })}
-            subtitles={form.substitles || []}
-            onChangeSubtitles={(substitles) => setForm({ ...form, substitles })}
-            servers={servers}
-            mediaType="movie"
-            mediaId={form.id || null}
-            defaultTitle={form.title || ''}
-          />
+          <div ref={linksSectionRef}>
+            <MediaLinksEditor
+              videos={form.videos || []}
+              onChangeVideos={(videos) => setForm({ ...form, videos })}
+              downloads={form.downloads || []}
+              onChangeDownloads={(downloads) => setForm({ ...form, downloads })}
+              subtitles={form.substitles || []}
+              onChangeSubtitles={(substitles) => setForm({ ...form, substitles })}
+              servers={servers}
+              mediaType="movie"
+              mediaId={form.id || null}
+              defaultTitle={form.title || ''}
+            />
+          </div>
 
           <div className="flex justify-end gap-2 pt-2">
             <button type="button" onClick={() => setModalOpen(false)} className="rounded-xl border border-slate-200 dark:border-slate-700 px-4 py-2 text-sm">

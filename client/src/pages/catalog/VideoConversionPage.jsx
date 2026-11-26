@@ -113,7 +113,7 @@ export default function VideoConversionPage() {
       load();
     } catch (err) {
       if (err?.isCancelled) {
-        toast.info?.('Upload cancelled') || toast.error('Upload cancelled');
+        toast.info('Upload cancelled');
       } else {
         toast.error(err?.message || getErrorMessage(err));
       }
