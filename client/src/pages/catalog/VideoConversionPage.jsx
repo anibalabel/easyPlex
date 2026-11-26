@@ -40,8 +40,10 @@ export default function VideoConversionPage() {
 
   const [uploading, setUploading] = useState(false);
   const [uploadPct, setUploadPct] = useState(0);
+  const [uploadProgressText, setUploadProgressText] = useState('');
   const [syncingR2, setSyncingR2] = useState(false);
   const [configuringCors, setConfiguringCors] = useState(false);
+  const uploadAbortRef = React.useRef(null);
 
   const [file, setFile] = useState(null);
   const [sourceUrl, setSourceUrl] = useState('');
@@ -75,8 +77,11 @@ export default function VideoConversionPage() {
       toast.error('Select a video file or enter a source URL.');
       return;
     }
+    const controller = new AbortController();
+    uploadAbortRef.current = controller;
     setUploading(true);
     setUploadPct(1);
+    setUploadProgressText(file ? `0 B / ${formatBytes(file.size)}` : '');
     try {
       if (file) {
         await uploadVideoDirect({
@@ -84,7 +89,13 @@ export default function VideoConversionPage() {
           type: mediaType,
           title: title.trim(),
           quality,
-          onProgress: (pct) => setUploadPct(pct),
+          signal: controller.signal,
+          onProgress: (pct, _phase, meta) => {
+            setUploadPct(pct);
+            if (meta?.total) {
+              setUploadProgressText(`${formatBytes(meta.loaded || 0)} / ${formatBytes(meta.total)}`);
+            }
+          },
         });
       } else {
         await api.post('/admin/videos/upload', {
@@ -101,10 +112,16 @@ export default function VideoConversionPage() {
       setLibPage(1);
       load();
     } catch (err) {
-      toast.error(err?.message || getErrorMessage(err));
+      if (err?.isCancelled) {
+        toast.info?.('Upload cancelled') || toast.error('Upload cancelled');
+      } else {
+        toast.error(err?.message || getErrorMessage(err));
+      }
     } finally {
+      uploadAbortRef.current = null;
       setUploading(false);
       setUploadPct(0);
+      setUploadProgressText('');
     }
   };
 
@@ -297,13 +314,24 @@ export default function VideoConversionPage() {
         </div>
 
         {uploading && (
-          <div className="space-y-1">
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between gap-2 text-xs text-slate-400">
+              <span>
+                {uploadPct < 99
+                  ? `Uploading to Cloudflare R2... ${uploadProgressText ? `${uploadProgressText} — ` : ''}${uploadPct}%`
+                  : 'Finalizing and registering video in library...'}
+              </span>
+              <button
+                type="button"
+                onClick={() => uploadAbortRef.current?.abort()}
+                className="inline-flex items-center gap-1 rounded-md bg-rose-500/15 hover:bg-rose-500/25 px-2.5 py-0.5 text-xs font-semibold text-rose-400"
+              >
+                <XCircle className="h-3.5 w-3.5" /> Cancel
+              </button>
+            </div>
             <div className="h-2 w-full rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
               <div className="h-full bg-indigo-500 transition-all duration-150" style={{ width: `${uploadPct}%` }} />
             </div>
-            <p className="text-xs text-slate-500">
-              {uploadPct < 99 ? `Uploading to Cloudflare R2... ${uploadPct}%` : 'Registering video in library...'}
-            </p>
           </div>
         )}
       </form>

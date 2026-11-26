@@ -81,8 +81,10 @@ export default function MediaLinksEditor({
   const [uploadQuality, setUploadQuality] = useState('Original');
   const [uploading, setUploading] = useState(false);
   const [uploadPct, setUploadPct] = useState(0);
+  const [uploadProgressText, setUploadProgressText] = useState('');
   const [uploadName, setUploadName] = useState('');
   const fileInputRef = useRef(null);
+  const uploadAbortRef = useRef(null);
   const { toast } = useToast();
 
   const applySelectedVideo = (item) => {
@@ -136,8 +138,11 @@ export default function MediaLinksEditor({
   const handleDirectFileUpload = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    const controller = new AbortController();
+    uploadAbortRef.current = controller;
     setUploading(true);
     setUploadPct(1);
+    setUploadProgressText(`0 B / ${formatBytes(file.size)}`);
     setUploadName(`${file.name} (${formatBytes(file.size)})`);
     try {
       const res = await uploadVideoDirect({
@@ -148,7 +153,13 @@ export default function MediaLinksEditor({
         movieId: mediaType === 'movie' ? mediaId : null,
         episodeId: mediaType === 'episode' || mediaType === 'anime' ? mediaId : null,
         autoAttach: false,
-        onProgress: (pct) => setUploadPct(pct),
+        signal: controller.signal,
+        onProgress: (pct, _phase, meta) => {
+          setUploadPct(pct);
+          if (meta?.total) {
+            setUploadProgressText(`${formatBytes(meta.loaded || 0)} / ${formatBytes(meta.total)}`);
+          }
+        },
       });
       const streamUrl = res?.stream_url || res?.video_path || '';
       if (streamUrl) {
@@ -162,10 +173,16 @@ export default function MediaLinksEditor({
         });
       }
     } catch (err) {
-      toast.error(err?.message || 'Video upload failed');
+      if (err?.isCancelled) {
+        toast.info?.('Upload cancelled') || toast.error('Upload cancelled');
+      } else {
+        toast.error(err?.message || 'Video upload failed');
+      }
     } finally {
+      uploadAbortRef.current = null;
       setUploading(false);
       setUploadPct(0);
+      setUploadProgressText('');
       setUploadName('');
       e.target.value = '';
     }
@@ -294,12 +311,21 @@ export default function MediaLinksEditor({
 
       {uploading && (
         <div className="px-4 py-2.5 bg-orange-500/10 border-b border-orange-500/20 space-y-1.5">
-          <div className="flex items-center justify-between text-xs font-semibold text-orange-400">
+          <div className="flex items-center justify-between gap-2 text-xs font-semibold text-orange-400">
             <span className="inline-flex items-center gap-1.5 truncate">
               <Upload className="h-3.5 w-3.5 shrink-0" />
               Uploading directly to Cloudflare R2 (as-is, no transcoding): {uploadName}
             </span>
-            <span>{uploadPct}%</span>
+            <div className="flex items-center gap-2 shrink-0">
+              <span>{uploadProgressText ? `${uploadProgressText} (${uploadPct}%)` : `${uploadPct}%`}</span>
+              <button
+                type="button"
+                onClick={() => uploadAbortRef.current?.abort()}
+                className="rounded-md bg-rose-500/20 hover:bg-rose-500/30 px-2 py-0.5 text-[11px] font-semibold text-rose-400"
+              >
+                Cancel
+              </button>
+            </div>
           </div>
           <div className="h-1.5 w-full rounded-full bg-slate-800 overflow-hidden">
             <div className="h-full bg-orange-500 transition-all duration-150" style={{ width: `${uploadPct}%` }} />

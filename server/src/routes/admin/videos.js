@@ -22,8 +22,11 @@ import {
 } from '../../middleware/upload.js';
 import { randomCode } from '../../services/crypto.js';
 import {
+  abortMultipartUploadR2,
   buildR2DeliveryUrl,
   buildR2ObjectKey,
+  completeMultipartUploadR2,
+  createMultipartUploadR2,
   deleteObjectR2,
   extractR2Key,
   getDirectoryForMediaType,
@@ -31,10 +34,26 @@ import {
   isR2Configured,
   listObjectsR2,
   presignPutObject,
+  presignUploadPart,
   putBucketCorsR2,
   putObjectR2,
   sanitizeVideoFilename,
 } from '../../services/r2.js';
+
+const MULTIPART_THRESHOLD_BYTES = 50 * 1024 * 1024;
+const DEFAULT_PART_SIZE_BYTES = 32 * 1024 * 1024;
+
+function computeMultipartPlan(fileSize) {
+  const minPartSize = 10 * 1024 * 1024;
+  let partSize = DEFAULT_PART_SIZE_BYTES;
+  if (Math.ceil(fileSize / partSize) > 1000) {
+    partSize = Math.max(minPartSize, Math.ceil(fileSize / 1000));
+    const mb = 1024 * 1024;
+    partSize = Math.ceil(partSize / mb) * mb;
+  }
+  const totalParts = Math.max(1, Math.ceil(fileSize / partSize));
+  return { partSize, totalParts };
+}
 
 const router = makeAsyncRouter(express.Router());
 router.use('/admin', requireAdminOrModerator);
@@ -312,13 +331,14 @@ async function storeBufferToActiveStorage({ req, buffer, originalName, mimeType,
 
 // ==================== CLOUDFLARE R2 DIRECT PRESIGN & LIBRARY ====================
 
-// 1) Generate S3 SigV4 presigned PUT URL so browsers upload any file size directly to R2
+// 1) Generate S3 SigV4 presigned PUT URL (or S3 Multipart plan for large files > 50 MB)
 router.post('/admin/video/r2/presign', requirePermission('video_conversion.create'), async (req, res) => {
   const filename = String(req.body?.filename || '').trim();
   if (!filename) {
     return res.status(400).json({ status: 400, message: 'Filename is required' });
   }
   const fileSize = Number(req.body?.file_size || 0);
+  const contentType = String(req.body?.content_type || 'video/mp4').trim() || 'video/mp4';
   const mediaType = req.body?.episode_id ? 'episode' : req.body?.type || 'movie';
   const settings = await getSettingsRow();
   const r2Cfg = getR2Config(settings);
@@ -335,8 +355,34 @@ router.post('/admin/video/r2/presign', requirePermission('video_conversion.creat
   }
 
   const key = buildR2ObjectKey(mediaType, filename);
-  const uploadUrl = presignPutObject(r2Cfg, { key, expiresSeconds: 3600 });
   const publicUrl = buildR2DeliveryUrl(r2Cfg, key, settings);
+
+  if (fileSize > MULTIPART_THRESHOLD_BYTES) {
+    const uploadId = await createMultipartUploadR2(r2Cfg, { key, contentType });
+    const { partSize, totalParts } = computeMultipartPlan(fileSize);
+    const initialCount = Math.min(totalParts, 150);
+    const partUrls = {};
+    for (let p = 1; p <= initialCount; p += 1) {
+      partUrls[p] = presignUploadPart(r2Cfg, { key, uploadId, partNumber: p, expiresSeconds: 7200 });
+    }
+    return res.json({
+      status: 200,
+      mode: 'multipart_r2',
+      r2_configured: true,
+      upload_id: uploadId,
+      key,
+      directory: getDirectoryForMediaType(mediaType),
+      public_url: publicUrl,
+      bucket: r2Cfg.bucket,
+      storage: 'r2',
+      part_size: partSize,
+      total_parts: totalParts,
+      part_urls: partUrls,
+      max_worker_mb: 95,
+    });
+  }
+
+  const uploadUrl = presignPutObject(r2Cfg, { key, expiresSeconds: 3600 });
 
   return res.json({
     status: 200,
@@ -353,7 +399,31 @@ router.post('/admin/video/r2/presign', requirePermission('video_conversion.creat
   });
 });
 
-// 2) Register a video after direct browser PUT to R2 finishes
+// 1b) Sign additional multipart upload part URLs on demand for very large files
+router.post('/admin/video/r2/multipart/sign-part', requirePermission('video_conversion.create'), async (req, res) => {
+  const key = String(req.body?.key || '').trim().replace(/^\/+/, '');
+  const uploadId = String(req.body?.upload_id || '').trim();
+  const partNumbers = Array.isArray(req.body?.part_numbers)
+    ? req.body.part_numbers.map(Number).filter((n) => Number.isInteger(n) && n >= 1 && n <= 10000).slice(0, 100)
+    : [];
+
+  if (!key || !uploadId || !partNumbers.length) {
+    return res.status(400).json({ status: 400, message: 'key, upload_id and part_numbers are required.' });
+  }
+  const settings = await getSettingsRow();
+  const r2Cfg = getR2Config(settings);
+  if (!r2Cfg.enabled) {
+    return res.status(422).json({ status: 422, message: 'Cloudflare R2 is not configured.' });
+  }
+
+  const partUrls = {};
+  for (const p of partNumbers) {
+    partUrls[p] = presignUploadPart(r2Cfg, { key, uploadId, partNumber: p, expiresSeconds: 7200 });
+  }
+  return res.json({ status: 200, part_urls: partUrls });
+});
+
+// 2) Register a video after direct PUT or S3 Multipart Upload to R2 finishes
 router.post('/admin/video/r2/complete', requirePermission('video_conversion.create'), async (req, res) => {
   const key = String(req.body?.key || '').trim().replace(/^\/+/, '');
   const settings = await getSettingsRow();
@@ -365,6 +435,17 @@ router.post('/admin/video/r2/complete', requirePermission('video_conversion.crea
 
   if (!key || !streamUrl) {
     return res.status(400).json({ status: 400, message: 'R2 object key and stream URL are required.' });
+  }
+
+  if (req.body?.upload_id && Array.isArray(req.body?.parts)) {
+    if (!r2Cfg.enabled) {
+      return res.status(422).json({ status: 422, message: 'Cloudflare R2 configuration missing.' });
+    }
+    await completeMultipartUploadR2(r2Cfg, {
+      key,
+      uploadId: req.body.upload_id,
+      parts: req.body.parts,
+    });
   }
 
   const result = await registerUploadedVideo({
@@ -384,6 +465,21 @@ router.post('/admin/video/r2/complete', requirePermission('video_conversion.crea
   });
 
   return res.json({ status: 200, message: 'Video uploaded to Cloudflare R2 and registered cleanly', ...result });
+});
+
+// 2b) Abort incomplete multipart upload so partial chunks do not remain in R2
+router.post('/admin/video/r2/abort', requirePermission('video_conversion.create'), async (req, res) => {
+  const key = String(req.body?.key || '').trim().replace(/^\/+/, '');
+  const uploadId = String(req.body?.upload_id || '').trim();
+  if (!key || !uploadId) {
+    return res.json({ status: 200, aborted: false });
+  }
+  const settings = await getSettingsRow();
+  const r2Cfg = getR2Config(settings);
+  if (r2Cfg.enabled) {
+    await abortMultipartUploadR2(r2Cfg, { key, uploadId }).catch(() => {});
+  }
+  return res.json({ status: 200, aborted: true });
 });
 
 // 3) One-click CORS rule installer on Cloudflare R2 bucket via S3 PutBucketCors
