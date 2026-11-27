@@ -7,7 +7,7 @@ import { makeAsyncRouter } from '../../middleware/asyncHandler.js';
 const router = makeAsyncRouter(Router());
 router.use('/admin', requireAdminOrModerator);
 
-const uploadSubtitle = createDiskUpload('substitles');
+const uploadSubtitle = createDiskUpload('subtitles', { preserveExtension: true });
 
 // ================= SERVERS (QUALITIES) =================
 router.get('/admin/servers/dataservers', async (_req, res) => {
